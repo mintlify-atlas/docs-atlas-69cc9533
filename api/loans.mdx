@@ -1,0 +1,468 @@
+---
+title: "Loans API: Create, Retrieve, and Return Equipment Loans"
+sidebarTitle: "Loans"
+description: "Reference for loans.php endpoints: POST to create a loan, GET to retrieve by CI or admin views, PUT to register a return or update loan details. Includes request/response schemas."
+---
+
+The `loans.php` file is the core of the equipment registry. It handles the full lifecycle of a loan: creation with a checkout signature, public return with a return signature, and administrative operations such as status overrides, record edits, and reporting queries. Public endpoints require no session; admin endpoints check `$_SESSION['user_id']` and return 401 if the session is missing.
+
+---
+
+## Loan Object Schema
+
+All admin GET endpoints return full loan records. The fields are:
+
+<ResponseField name="id" type="integer">
+  Auto-incremented primary key for the loan record.
+</ResponseField>
+
+<ResponseField name="ci" type="string">
+  Cédula de identidad (national ID) of the borrower.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Full name of the borrower.
+</ResponseField>
+
+<ResponseField name="group_name" type="string">
+  Optional class or group identifier (e.g., `"3°A"`).
+</ResponseField>
+
+<ResponseField name="equipment_details" type="string">
+  Free-text description of the borrowed equipment (e.g., `"Ceibalita 003, Cable HDMI"`).
+</ResponseField>
+
+<ResponseField name="checkout_time" type="string">
+  ISO-8601-style datetime when the loan was created, set by `NOW()` on the server (e.g., `"2024-03-15 08:30:00"`).
+</ResponseField>
+
+<ResponseField name="checkout_signature" type="string">
+  Base64 PNG data URL of the borrower's checkout signature.
+</ResponseField>
+
+<ResponseField name="return_time" type="string | null">
+  Datetime when the equipment was returned. `null` while the loan is active.
+</ResponseField>
+
+<ResponseField name="return_signature" type="string | null">
+  Base64 PNG data URL of the return signature. `null` for admin-overridden returns.
+</ResponseField>
+
+<ResponseField name="return_observation" type="string | null">
+  Optional freetext note recorded at return time.
+</ResponseField>
+
+<ResponseField name="status" type="string">
+  Either `"active"` (equipment not yet returned) or `"returned"` (equipment back).
+</ResponseField>
+
+---
+
+## POST `loans.php` — Create a Loan
+
+Records a new equipment checkout. Access is **public** — no admin session required. The checkout timestamp is set to `NOW()` by the server and the initial `status` is `"active"`.
+
+### Request Body
+
+<ParamField body="ci" type="string" required>
+  Cédula de identidad of the borrower.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Full name of the borrower.
+</ParamField>
+
+<ParamField body="equipment_details" type="string" required>
+  Description of the equipment being checked out.
+</ParamField>
+
+<ParamField body="checkout_signature" type="string" required>
+  Base64 PNG data URL of the borrower's signature, obtained from `SignaturePad.getBase64()`.
+</ParamField>
+
+<ParamField body="group_name" type="string">
+  Optional class or group label for the borrower.
+</ParamField>
+
+### Responses
+
+<ResponseField name="message" type="string">
+  `"Préstamo registrado correctamente"` on success.
+</ResponseField>
+
+<ResponseField name="id" type="integer">
+  The auto-incremented ID of the newly created loan record.
+</ResponseField>
+
+| Status | Body                                                                   | Condition                              |
+| ------ | ---------------------------------------------------------------------- | -------------------------------------- |
+| 200    | `{ "message": "Préstamo registrado correctamente", "id": 42 }`         | Loan created                           |
+| 400    | `{ "error": "Faltan campos obligatorios" }`                            | One or more required fields missing    |
+| 500    | `{ "error": "Error al guardar: ..." }`                                 | Database write failed                  |
+
+### curl Example
+
+```bash
+curl -X POST "http://your-server/api/loans.php" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "ci": "12345678",
+    "name": "Ana García",
+    "group_name": "3°A",
+    "equipment_details": "Ceibalita 003, Cable HDMI",
+    "checkout_signature": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+  }'
+```
+
+### JavaScript Client
+
+```javascript
+const result = await API.createLoan({
+  ci: '12345678',
+  name: 'Ana García',
+  group_name: '3°A',
+  equipment_details: 'Ceibalita 003, Cable HDMI',
+  checkout_signature: checkoutSignature.getBase64()
+});
+console.log('Loan created with ID:', result.id);
+```
+
+---
+
+## GET `loans.php?action=active_by_ci&ci={ci}` — Active Loans by CI
+
+Returns all loans with `status = 'active'` for the given cédula. Access is **public**. Used by the return form to look up what a person currently has checked out.
+
+### Query Parameters
+
+<ParamField query="action" type="string" required>
+  Must be `active_by_ci`.
+</ParamField>
+
+<ParamField query="ci" type="string" required>
+  The cédula de identidad to look up.
+</ParamField>
+
+### Response
+
+Returns a JSON array of active loan summaries ordered by `checkout_time DESC`. Each item contains:
+
+<ResponseField name="id" type="integer">
+  Loan record ID.
+</ResponseField>
+
+<ResponseField name="equipment_details" type="string">
+  Description of the checked-out equipment.
+</ResponseField>
+
+<ResponseField name="checkout_time" type="string">
+  Datetime when the equipment was checked out.
+</ResponseField>
+
+| Status | Body                                            | Condition               |
+| ------ | ----------------------------------------------- | ----------------------- |
+| 200    | Array of loan summary objects (may be empty)    | Query successful        |
+| 400    | `{ "error": "Falta cédula" }`                   | `ci` parameter missing  |
+
+### curl Example
+
+```bash
+curl "http://your-server/api/loans.php?action=active_by_ci&ci=12345678"
+```
+
+### JavaScript Client
+
+```javascript
+const activeLoans = await API.getActiveLoansByCI('12345678');
+activeLoans.forEach(loan => {
+  console.log(`Loan #${loan.id}: ${loan.equipment_details} (since ${loan.checkout_time})`);
+});
+```
+
+---
+
+## PUT `loans.php` — Return a Loan (Public)
+
+Registers the return of a specific loan. The borrower provides their signature; no admin session is needed. Sets `return_time = NOW()` and flips `status` to `"returned"`. Only loans currently in `status = 'active'` can be returned this way.
+
+### Request Body
+
+<ParamField body="id" type="integer" required>
+  ID of the loan to return.
+</ParamField>
+
+<ParamField body="return_signature" type="string" required>
+  Base64 PNG data URL of the return signature.
+</ParamField>
+
+<ParamField body="return_observation" type="string">
+  Optional freetext note (e.g., damage notes). Defaults to `null`.
+</ParamField>
+
+### Responses
+
+<ResponseField name="message" type="string">
+  `"Devolución registrada correctamente"` on success.
+</ResponseField>
+
+| Status | Body                                                        | Condition                                   |
+| ------ | ----------------------------------------------------------- | ------------------------------------------- |
+| 200    | `{ "message": "Devolución registrada correctamente" }`      | Return recorded                             |
+| 400    | `{ "error": "Faltan campos obligatorios para la devolución" }` | `return_signature` missing                |
+| 404    | `{ "error": "Préstamo no encontrado o ya devuelto" }`       | No active loan found with the given ID      |
+| 500    | `{ "error": "Error al guardar: ..." }`                      | Database write failed                       |
+
+### curl Example
+
+```bash
+curl -X PUT "http://your-server/api/loans.php" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": 42,
+    "return_signature": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...",
+    "return_observation": "Cable devuelto con pequeño doblez"
+  }'
+```
+
+### JavaScript Client
+
+```javascript
+await API.returnLoan(42, returnSignature.getBase64(), 'Cable devuelto con pequeño doblez');
+```
+
+<Tip>
+  Pass an empty string as the third argument if there is no observation: `API.returnLoan(42, sig, '')`. The server stores it as `null` when the value is falsy.
+</Tip>
+
+---
+
+## PUT `loans.php` — Update Loan Status (Admin)
+
+Allows an authenticated admin to override the loan status without requiring a borrower signature. Useful for marking equipment as returned when the borrower is not present, or for reverting an accidental return.
+
+**Requires an active admin session.**
+
+### Request Body
+
+<ParamField body="id" type="integer" required>
+  ID of the loan to update.
+</ParamField>
+
+<ParamField body="status" type="string" required>
+  Target status. Accepted values: `"returned"` or `"active"`.
+</ParamField>
+
+<ParamField body="return_observation" type="string">
+  Note to attach when marking as returned. Defaults to `"Marcado como devuelto desde administración"` if omitted.
+</ParamField>
+
+### Behaviour by Status Value
+
+**`status: "returned"`** — Updates an active loan: sets `return_time = NOW()`, sets `return_signature = NULL`, sets `return_observation` to the provided value or the default admin note, and flips `status` to `"returned"`. The `WHERE` clause requires `status = 'active'`, so already-returned loans are untouched.
+
+**`status: "active"`** — Reverts a returned loan: sets `status = 'active'`, nulls out `return_time`, `return_signature`, and `return_observation`.
+
+### Responses
+
+| Status | Body                                                            | Condition                                     |
+| ------ | --------------------------------------------------------------- | --------------------------------------------- |
+| 200    | `{ "message": "Registro marcado como devuelto" }`               | Successfully marked as returned               |
+| 200    | `{ "message": "Registro marcado como en préstamo" }`            | Successfully reverted to active               |
+| 401    | `{ "error": "No autorizado" }`                                  | No active admin session                       |
+| 404    | `{ "error": "Préstamo no encontrado o ya devuelto" }`           | Loan not found or already in target state     |
+| 500    | `{ "error": "Error al guardar: ..." }`                          | Database write failed                         |
+
+### curl Example
+
+```bash
+# Mark as returned (admin override, with cookie from login)
+curl -b cookies.txt -X PUT "http://your-server/api/loans.php" \
+  -H "Content-Type: application/json" \
+  -d '{"id": 42, "status": "returned", "return_observation": "Admin override"}'
+
+# Revert to active
+curl -b cookies.txt -X PUT "http://your-server/api/loans.php" \
+  -H "Content-Type: application/json" \
+  -d '{"id": 42, "status": "active"}'
+```
+
+### JavaScript Client
+
+```javascript
+// Admin override — mark as returned
+await API.updateLoanStatus(42, 'returned', 'Admin override');
+
+// Revert to active
+await API.updateLoanStatus(42, 'active');
+```
+
+---
+
+## PUT `loans.php` — Update Loan Details (Admin)
+
+Edits one or more data fields of an existing loan record. **Requires an active admin session.** Any combination of the four updatable fields may be sent in a single request.
+
+### Request Body
+
+<ParamField body="id" type="integer" required>
+  ID of the loan record to edit.
+</ParamField>
+
+<ParamField body="equipment_details" type="string">
+  New equipment description.
+</ParamField>
+
+<ParamField body="name" type="string">
+  Corrected borrower name.
+</ParamField>
+
+<ParamField body="ci" type="string">
+  Corrected cédula de identidad.
+</ParamField>
+
+<ParamField body="group_name" type="string">
+  Updated group or class label.
+</ParamField>
+
+### Responses
+
+<ResponseField name="message" type="string">
+  `"Registro actualizado correctamente"` on success.
+</ResponseField>
+
+| Status | Body                                                      | Condition                                      |
+| ------ | --------------------------------------------------------- | ---------------------------------------------- |
+| 200    | `{ "message": "Registro actualizado correctamente" }`     | Record updated                                 |
+| 401    | `{ "error": "No autorizado" }`                            | No active admin session                        |
+| 404    | `{ "error": "Préstamo no encontrado o sin cambios" }`     | ID not found or supplied values are unchanged  |
+| 500    | `{ "error": "Error al guardar: ..." }`                    | Database write failed                          |
+
+<Note>
+  The `PUT` handler checks for `status` first, then for updatable fields. Both paths can coexist in one request body, but mixing `status` with field edits is not a documented or tested workflow — send them as separate requests.
+</Note>
+
+### curl Example
+
+```bash
+curl -b cookies.txt -X PUT "http://your-server/api/loans.php" \
+  -H "Content-Type: application/json" \
+  -d '{"id": 42, "equipment_details": "Ceibalita 003 (repuesto)"}'
+```
+
+### JavaScript Client
+
+```javascript
+await API.updateLoanDetails(42, { equipment_details: 'Ceibalita 003 (repuesto)' });
+
+// Update multiple fields at once
+await API.updateLoanDetails(42, {
+  name: 'Ana M. García',
+  group_name: '3°B'
+});
+```
+
+---
+
+## GET `loans.php?action=pending` — Pending Loans (Admin)
+
+Returns all loans with `status = 'active'`, ordered by `checkout_time ASC` (oldest first). **Requires an active admin session.**
+
+### Response
+
+An array of full loan objects ordered oldest-first. See the [Loan Object Schema](#loan-object-schema) at the top of this page for field definitions.
+
+| Status | Body                                          | Condition                |
+| ------ | --------------------------------------------- | ------------------------ |
+| 200    | Array of full loan objects (may be empty)     | Query successful         |
+| 401    | `{ "error": "No autorizado" }`                | No active admin session  |
+
+### curl Example
+
+```bash
+curl -b cookies.txt "http://your-server/api/loans.php?action=pending"
+```
+
+### JavaScript Client
+
+```javascript
+const pending = await API.getPendingLoans();
+console.log(`${pending.length} active loans`);
+```
+
+---
+
+## GET `loans.php?action=all` — Full Loan History (Admin)
+
+Returns every loan record regardless of status, ordered by `id DESC` (most recent first). **Requires an active admin session.**
+
+### Response
+
+An array of full loan objects. See the [Loan Object Schema](#loan-object-schema) for field definitions.
+
+| Status | Body                                          | Condition                |
+| ------ | --------------------------------------------- | ------------------------ |
+| 200    | Array of full loan objects                    | Query successful         |
+| 401    | `{ "error": "No autorizado" }`                | No active admin session  |
+
+### curl Example
+
+```bash
+curl -b cookies.txt "http://your-server/api/loans.php?action=all"
+```
+
+### JavaScript Client
+
+```javascript
+const history = await API.getAllLoans();
+console.log(`Total records: ${history.length}`);
+```
+
+---
+
+## GET `loans.php?action=stats` — Dashboard KPIs (Admin)
+
+Returns aggregated counts for the admin dashboard. All values are integers. **Requires an active admin session.**
+
+### Response Fields
+
+<ResponseField name="today" type="integer">
+  Number of loans created today (based on `DATE(checkout_time) = CURDATE()`).
+</ResponseField>
+
+<ResponseField name="active" type="integer">
+  Number of loans currently in `status = 'active'`.
+</ResponseField>
+
+<ResponseField name="returned_today" type="integer">
+  Number of loans returned today (based on `DATE(return_time) = CURDATE()`).
+</ResponseField>
+
+<ResponseField name="delayed" type="integer">
+  Number of active loans where `checkout_time < NOW() - INTERVAL 12 HOUR`. These are overdue.
+</ResponseField>
+
+<ResponseField name="total" type="integer">
+  Total number of loan records across all time.
+</ResponseField>
+
+| Status | Body                                                                                      | Condition                |
+| ------ | ----------------------------------------------------------------------------------------- | ------------------------ |
+| 200    | `{ "today": 5, "active": 3, "returned_today": 2, "delayed": 1, "total": 148 }`           | Query successful         |
+| 401    | `{ "error": "No autorizado" }`                                                            | No active admin session  |
+
+### curl Example
+
+```bash
+curl -b cookies.txt "http://your-server/api/loans.php?action=stats"
+```
+
+### JavaScript Client
+
+```javascript
+const stats = await API.getStats();
+console.log(`Active: ${stats.active}, Delayed: ${stats.delayed}, Total: ${stats.total}`);
+```
+
+<Warning>
+  The `delayed` threshold is hard-coded to **12 hours** in the SQL query (`checkout_time < NOW() - INTERVAL 12 HOUR`). Loans outstanding for less than 12 hours will not appear in this count even if they are active overnight.
+</Warning>

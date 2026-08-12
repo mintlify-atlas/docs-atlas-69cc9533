@@ -1,0 +1,244 @@
+---
+title: "Return Equipment and Close an Active Loan"
+sidebarTitle: "Return"
+description: "How students find their active loans by cédula, select a loan, sign the return form, and confirm equipment return in the ISBO registry."
+---
+
+The **Registrar Devolución** screen lets a student close one of their active loans by locating the record with their cédula, selecting the correct item, optionally noting any observations (e.g. missing accessories or damage), drawing a return signature, and confirming. The entire flow is contained inside the `view-return` section of the single-page app and requires no administrator involvement. Once confirmed, the loan record is updated in the database and the equipment is marked as returned.
+
+## Inactivity Timer
+
+The return view includes a **5-minute inactivity guard**. If no interaction is detected for five minutes while the Devolver tab is active, the app automatically switches back to the **Retirar** view and shows an informational toast. This prevents a partially-completed return form from being left open on a shared kiosk.
+
+```javascript
+const RETURN_VIEW_INACTIVITY_MS = 5 * 60 * 1000; // 300 000 ms
+
+function resetReturnInactivityTimer() {
+    clearReturnInactivityTimer();
+    returnViewInactivityTimeout = setTimeout(() => {
+        if (!document.getElementById('view-return').classList.contains('hidden')) {
+            UI.switchView('view-checkout');
+            UI.showToast('No se usó la devolución en 5 minutos. Volviendo a Retirar.', 'info');
+        }
+    }, RETURN_VIEW_INACTIVITY_MS);
+}
+```
+
+The timer resets on every meaningful user interaction: switching to the Devolver tab, typing in the CI search field, pressing **Buscar**, and selecting a loan card.
+
+## Step-by-Step Return Flow
+
+<Steps>
+  <Step title="Open the Devolver tab">
+    Click the **Devolver** button in the top navigation bar. The `view-return` section becomes visible, the inactivity timer starts, and any previously displayed loan results are hidden until a new search is performed.
+  </Step>
+
+  <Step title="Enter your Cédula and search for active loans">
+    Type your cédula in the **Tu Cédula de Identidad** search field and click **Buscar** (or press **Enter**). The search field enforces the same 7–8 digit rule as the checkout form.
+
+    The click handler calls `API.getActiveLoansByCI(ci)`:
+
+    ```javascript
+    const loans = await API.getActiveLoansByCI(ci);
+    ```
+
+    Which issues a `GET` request:
+
+    ```javascript
+    async getActiveLoansByCI(ci) {
+        return this.request(
+            `loans.php?action=active_by_ci&ci=${encodeURIComponent(ci)}`
+        );
+    }
+    ```
+
+    The PHP endpoint returns only the columns needed for display — it does **not** expose signature data to the public view:
+
+    ```php
+    $stmt = $pdo->prepare(
+        "SELECT id, equipment_details, checkout_time
+         FROM loans
+         WHERE ci = ? AND status = 'active'
+         ORDER BY checkout_time DESC"
+    );
+    $stmt->execute([$_GET['ci']]);
+    sendJsonResponse($stmt->fetchAll());
+    ```
+
+    **Example response**
+
+    ```json
+    [
+      {
+        "id": 47,
+        "equipment_details": "Ceibalita 042, Cable HDMI",
+        "checkout_time": "2025-06-10 09:14:00"
+      }
+    ]
+    ```
+
+    <Warning>
+      If the cédula field is empty, or has fewer than 7 or more than 8 characters, the search is blocked client-side and an error toast is shown instead of making a network request.
+    </Warning>
+  </Step>
+
+  <Step title="Select the loan to return">
+    A list of loan cards is rendered dynamically inside `#loans-list`. Each card shows the equipment description and the checkout date/time. Click the card for the loan you want to close.
+
+    ```javascript
+    loans.forEach(loan => {
+        const item = document.createElement('div');
+        item.className = 'loan-item';
+        item.innerHTML = `
+            <div class="loan-details">
+                <h4>${UI.escapeHTML(loan.equipment_details)}</h4>
+                <p>Retirado el: ${UI.formatDate(loan.checkout_time)}</p>
+            </div>
+        `;
+        item.addEventListener('click', () => {
+            document.getElementById('return-loan-id').value = loan.id;
+            document.getElementById('return-details').classList.remove('hidden');
+            setTimeout(() => window.returnSignature.resizeCanvas(), 50);
+        });
+        list.appendChild(item);
+    });
+    ```
+
+    The selected card receives a `selected` CSS class and the hidden `#return-loan-id` input is populated with the loan's database ID. The return form (`#return-details`) slides into view.
+
+    <Tip>
+      If you have more than one active loan, all of them appear in the list. Make sure you select the card that matches the specific equipment you are returning right now.
+    </Tip>
+  </Step>
+
+  <Step title="Add optional observations">
+    The **Observaciones** field (`#return-obs`) is free text and entirely optional. Use it to note any issues with the returned equipment, such as missing accessories or damage noticed on return.
+
+    ```html
+    <input type="text" id="return-obs"
+           placeholder="Ej: Falta pila del control, cable dañado...">
+    ```
+
+    Leave the field blank if the equipment is returned in perfect condition.
+  </Step>
+
+  <Step title="Draw your return signature">
+    Sign inside the **Firma de Devolución** canvas (`#return-signature-pad`). This uses the same `SignaturePad` class as the checkout form, initialised as `window.returnSignature`.
+
+    The clear button (`data-canvas="return-signature-pad"`) wipes the canvas so you can redraw if needed.
+
+    <Warning>
+      The return signature is **required**. Submitting without a signature triggers the toast: *"Por favor, firma la devolución"* and the PUT request is not sent.
+    </Warning>
+  </Step>
+
+  <Step title="Confirm the return">
+    Click **Confirmar Devolución**. The submit handler collects the loan ID, the base64-encoded signature, and any observation text, then calls `API.returnLoan()`:
+
+    ```javascript
+    const id  = document.getElementById('return-loan-id').value;
+    const obs  = document.getElementById('return-obs').value;
+    const sign = window.returnSignature.getBase64();
+
+    await API.returnLoan(id, sign, obs);
+    ```
+
+    `API.returnLoan()` sends a `PUT` request:
+
+    ```javascript
+    async returnLoan(returnId, signatureBase64, observation = '') {
+        return this.request('loans.php', 'PUT', {
+            id: returnId,
+            return_signature: signatureBase64,
+            return_observation: observation
+        });
+    }
+    ```
+
+    The PHP endpoint sets `return_time = NOW()`, stores the signature and observation, and flips `status` to `'returned'`. It only updates rows that are currently `active`, preventing double-returns:
+
+    ```php
+    $stmt = $pdo->prepare(
+        "UPDATE loans
+         SET return_time = NOW(),
+             return_signature = ?,
+             return_observation = ?,
+             status = 'returned'
+         WHERE id = ? AND status = 'active'"
+    );
+    $stmt->execute([
+        $data->return_signature,
+        isset($data->return_observation) ? $data->return_observation : null,
+        $data->id
+    ]);
+    ```
+  </Step>
+
+  <Step title="Confirmation and reset">
+    On success the app:
+
+    - Shows a green toast: *"¡Devolución confirmada!"*
+    - Resets the return form and clears the signature canvas
+    - Hides the loan list and return details panel
+    - Clears the CI search field and scrolls to the top of the page
+    - Returns focus to the CI input field for the next user
+
+    ```javascript
+    UI.showToast('¡Devolución confirmada!', 'success');
+    e.target.reset();
+    window.returnSignature.clear();
+    clearReturnCiInput();
+    document.getElementById('return-details').classList.add('hidden');
+    ```
+  </Step>
+</Steps>
+
+## API Request / Response
+
+**Request**
+
+```http
+PUT api/loans.php
+Content-Type: application/json
+
+{
+  "id": 47,
+  "return_signature": "data:image/png;base64,iVBORw0KGgo...",
+  "return_observation": "Falta pila del control"
+}
+```
+
+**Success response** — HTTP 200
+
+```json
+{
+  "message": "Devolución registrada correctamente"
+}
+```
+
+**Error responses**
+
+| HTTP status | JSON body | Cause |
+|---|---|---|
+| 400 | `{"error": "Faltan campos obligatorios para la devolución"}` | `return_signature` missing from body |
+| 400 | `{"error": "Falta el ID del préstamo"}` | `id` missing from body |
+| 404 | `{"error": "Préstamo no encontrado o ya devuelto"}` | Loan ID doesn't exist or `status` is already `returned` |
+
+## Error Handling
+
+<CardGroup cols={2}>
+  <Card title="No active loans found" icon="circle-info">
+    If the CI search returns an empty array, the loans list shows a message: *"No tienes préstamos activos pendientes de devolver."* The return form remains hidden. The student should check that they typed the correct cédula.
+  </Card>
+  <Card title="Loan already returned" icon="triangle-exclamation">
+    If a student attempts to return a loan whose status has already been changed to `returned` (e.g. marked by an admin), the server returns HTTP 404. The app displays an error toast with the server's message.
+  </Card>
+</CardGroup>
+
+## Clearing the Search
+
+The **Limpiar** button (`#btn-clear-search-ci`) resets the entire return panel — it clears the CI input, hides the loan list, hides the return form, and resets the hidden loan ID field. Use it to start a fresh search without switching tabs.
+
+<Note>
+  Pressing **Escape** while the CI field is focused also triggers the clear action, equivalent to clicking the Limpiar button.
+</Note>

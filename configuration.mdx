@@ -1,0 +1,174 @@
+---
+title: "Configure Database Connection and Admin Credentials"
+sidebarTitle: "Configuration"
+description: "Configure api/config.php to connect to your MySQL database, set up the session directory, and manage admin user credentials for the ISBO registry."
+---
+
+All server-side configuration for the ISBO Equipment Registry lives in a single file: `api/config.php`. This file is included at the top of every PHP endpoint (`auth.php` and `loans.php`) via `require_once`. It handles three responsibilities: creating and setting a local PHP session directory, opening the PDO database connection, and defining the `sendJsonResponse()` helper used by every endpoint to return JSON.
+
+## The api/config.php file
+
+Below is the full file with the real password replaced by a placeholder:
+
+```php
+<?php
+// api/config.php
+
+// Define a local path for sessions inside the project
+$sessionPath = __DIR__ . '/sesiones';
+if (!is_dir($sessionPath)) {
+    mkdir($sessionPath, 0777, true);
+}
+session_save_path($sessionPath);
+
+// Start the session
+session_start();
+
+$host     = 'localhost';
+$db_name  = 'isbo_prestamos';
+$username = 'root';          // Change if necessary on LAMPP
+$password = 'your_password'; // Change if necessary on LAMPP
+
+try {
+    $pdo = new PDO(
+        "mysql:host=" . $host . ";dbname=" . $db_name . ";charset=utf8",
+        $username,
+        $password
+    );
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+} catch (PDOException $exception) {
+    http_response_code(500);
+    header('Content-Type: application/json');
+    echo json_encode(['error' => 'Connection error: ' . $exception->getMessage()]);
+    exit;
+}
+
+// Helper function to return JSON responses
+function sendJsonResponse($data, $statusCode = 200) {
+    http_response_code($statusCode);
+    header('Content-Type: application/json');
+    echo json_encode($data);
+    exit;
+}
+?>
+```
+
+<Warning>
+  Never commit real database credentials to a public repository. Add `api/config.php` to your `.gitignore`, or replace the credentials with environment variable reads (e.g. `getenv('DB_PASSWORD')`) before pushing to any hosted Git service.
+</Warning>
+
+## Connection variables
+
+| Variable | Default value | Description |
+|---|---|---|
+| `$host` | `localhost` | Hostname or IP of your MySQL server. Change to `127.0.0.1` or a remote host if MySQL runs on a separate machine. |
+| `$db_name` | `isbo_prestamos` | Name of the database. Must match the database you created during installation. |
+| `$username` | `root` | MySQL user account. On production servers, create a dedicated user with only `SELECT`, `INSERT`, `UPDATE`, and `DELETE` privileges on `isbo_prestamos` rather than using `root`. |
+| `$password` | *(your password)* | Password for the MySQL user above. |
+
+### PDO connection attributes
+
+After a successful connection, two PDO attributes are set:
+
+- **`PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION`** — any SQL error throws a `PDOException`, which is caught in each endpoint and returned as a JSON error response with HTTP 500.
+- **`PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC`** — query results are returned as associative arrays (column name as key), so the JSON output uses column names directly as property names.
+
+If the connection fails, the script immediately responds with HTTP 500 and a JSON `error` key, then halts — no endpoint logic runs.
+
+## Session path: api/sesiones/
+
+The application deliberately avoids storing PHP sessions in the system's default temporary directory. Instead, `config.php` stores sessions inside the project itself:
+
+```php
+$sessionPath = __DIR__ . '/sesiones';
+if (!is_dir($sessionPath)) {
+    mkdir($sessionPath, 0777, true);
+}
+session_save_path($sessionPath);
+```
+
+This approach has two practical benefits:
+
+1. **Portability** — moving the project folder to a different server or user account keeps sessions working without reconfiguring `php.ini`.
+2. **Predictability on shared hosts** — some shared hosts restrict writes to the system `/tmp` directory; a project-local directory bypasses that restriction.
+
+<Note>
+  The `mkdir($sessionPath, 0777, true)` call only runs if the directory does not already exist. On first request the directory is created automatically, so you do not need to create it manually during deployment.
+</Note>
+
+The `api/sesiones/` directory should not be web-accessible. If your Apache configuration serves everything under `api/`, consider adding a `.htaccess` file in `api/sesiones/` to deny direct access:
+
+```apache
+# api/sesiones/.htaccess
+Deny from all
+```
+
+## The sendJsonResponse() helper
+
+Every API endpoint returns JSON through `sendJsonResponse()`:
+
+```php
+function sendJsonResponse($data, $statusCode = 200) {
+    http_response_code($statusCode);
+    header('Content-Type: application/json');
+    echo json_encode($data);
+    exit;
+}
+```
+
+The function does three things:
+
+1. Sets the HTTP response code (defaults to `200`; endpoints pass `400`, `401`, `404`, or `500` for errors).
+2. Sets the `Content-Type: application/json` header so browsers and the `fetch()` client parse the body correctly.
+3. Calls `exit` immediately after `json_encode()` to ensure no additional output follows — stray whitespace or PHP notices would corrupt the JSON.
+
+The frontend `API.request()` method in `assets/js/api.js` always calls `response.json()` on the response, so all endpoints must return valid JSON — including error responses.
+
+## Changing the admin password
+
+To update an existing admin user's password, generate a new bcrypt hash with the PHP CLI and run an `UPDATE` query:
+
+```bash
+# Generate a new hash from the command line
+php -r "echo password_hash('new_strong_password', PASSWORD_DEFAULT) . PHP_EOL;"
+```
+
+```sql
+-- Paste the generated hash into this query
+UPDATE users
+SET    password_hash = '$2y$10$PASTE_THE_NEW_HASH_HERE'
+WHERE  username = 'admin';
+```
+
+<Tip>
+  PHP's `password_verify()` (used in `auth.php`) automatically handles the bcrypt cost factor encoded in the hash string, so you do not need to change any code when updating the password.
+</Tip>
+
+To add a second admin account:
+
+```sql
+INSERT INTO users (username, password_hash)
+VALUES ('otro_admin', '$2y$10$PASTE_HASH_FOR_SECOND_ACCOUNT');
+```
+
+## The API_BASE constant in assets/js/api.js
+
+The JavaScript fetch wrapper resolves all API URLs relative to a single constant at the top of `assets/js/api.js`:
+
+```javascript
+const API_BASE = 'api/';
+```
+
+This works correctly when `index.html` is served from the project root (e.g. `http://localhost/registroComponentesMultimedia/index.html`). If you install the application in a subdirectory or configure Apache to serve it from a non-root virtual host path, you must update `API_BASE` to reflect the path to the `api/` folder as seen by the browser.
+
+For example, if the app is accessible at `https://example.com/sistemas/registro/`:
+
+```javascript
+// assets/js/api.js — subdirectory install
+const API_BASE = '/sistemas/registro/api/';
+```
+
+<Note>
+  `API_BASE` affects every API call in the application — login, checkout, return, stats, history, and PDF export all use it. Change it in one place and all requests update automatically.
+</Note>

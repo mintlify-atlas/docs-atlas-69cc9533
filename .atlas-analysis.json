@@ -1,0 +1,91 @@
+{
+  "projectType": "saas",
+  "projectName": "ISBO - Registro de Equipamiento Multimedia",
+  "projectDescription": "A web-based multimedia equipment loan management system for Instituto Superior Brazo Oriental, allowing students to check out and return equipment with digital signatures and an admin dashboard.",
+  "theme": "luma",
+  "primaryColor": "#00458a",
+  "lightColor": "#1a63af",
+  "darkColor": "#002d5c",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Guides",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "configuration"
+            ]
+          },
+          {
+            "group": "Using the Application",
+            "pages": [
+              "guides/checkout",
+              "guides/return",
+              "guides/admin-dashboard"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/server-setup",
+              "deployment/database",
+              "deployment/permissions"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/auth",
+              "api/loans"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Equipment checkout form with digital signature capture (Canvas API)",
+    "Equipment return workflow with active loan lookup by national ID",
+    "Admin dashboard with KPI metrics (today's loans, active, returned, delayed)",
+    "Pending alerts for loans overdue by more than 12 hours",
+    "Full loan history with date-range filtering and search by name or ID",
+    "PDF report export (full or pending-only) via html2pdf.js",
+    "Editable loan records from the admin panel",
+    "Session-based admin authentication with PHP",
+    "Responsive design with accessible ARIA attributes",
+    "Real-time Montevideo clock display",
+    "Inactivity timer on the return view (auto-redirects after 5 minutes)",
+    "SELinux-aware server permission repair script for CentOS 9"
+  ],
+  "publicApiSurface": [
+    "POST api/auth.php?action=login — Admin login with username/password",
+    "GET api/auth.php?action=check — Check current session status",
+    "POST api/auth.php?action=logout — Destroy admin session",
+    "POST api/loans.php — Create a new equipment loan (public)",
+    "GET api/loans.php?action=active_by_ci&ci={ci} — Get active loans by national ID (public)",
+    "PUT api/loans.php — Return a loan with signature (public) or update status/details (admin)",
+    "GET api/loans.php?action=pending — Get all active/pending loans (admin)",
+    "GET api/loans.php?action=all — Get full loan history (admin)",
+    "GET api/loans.php?action=stats — Get dashboard KPI statistics (admin)",
+    "SignaturePad class — Canvas-based digital signature with mouse/touch support and Base64 export",
+    "API.createLoan(loanData) — JS client method to register a checkout",
+    "API.getActiveLoansByCI(ci) — JS client method to look up active loans",
+    "API.returnLoan(id, signatureBase64, observation) — JS client method to register a return",
+    "API.updateLoanStatus(id, status, observation) — Admin JS method to change loan status",
+    "API.updateLoanDetails(id, updates) — Admin JS method to edit loan fields"
+  ]
+}

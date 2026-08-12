@@ -1,0 +1,204 @@
+---
+title: "Set Up an Apache Server to Host the Equipment Registry"
+sidebarTitle: "Server Setup"
+description: "How to deploy ISBO Registro de Equipamiento on Apache with PHP and MySQL on CentOS 9, RHEL, or XAMPP for Windows and Linux."
+---
+
+The ISBO Registro de Equipamiento Multimedia is a PHP/MySQL web application that runs on any standard Apache + PHP stack. This guide walks you through preparing a server or local machine to host the application, covering both a production CentOS 9 / RHEL environment and a XAMPP-based local development setup.
+
+## Supported Environments
+
+| Environment | Use case | Document root |
+|---|---|---|
+| CentOS 9 / RHEL (Apache) | Production server | `/var/www/html` |
+| XAMPP on Windows | Local development / demos | `C:\xampp\htdocs` |
+| XAMPP on Linux | Local development | `/opt/lampp/htdocs` |
+
+<Tip>
+  If you only need a quick local demo on Windows, skip the CentOS steps and jump straight to the [XAMPP section](#xampp-local-development) below. XAMPP bundles Apache, PHP, and MariaDB in a single installer — no manual service configuration required.
+</Tip>
+
+---
+
+## Production Setup: CentOS 9 / RHEL
+
+<Steps>
+  <Step title="Install Apache, PHP, and MySQL (MariaDB)">
+    Log in as root or a user with `sudo` privileges, then install all required packages in a single command:
+
+    ```bash
+    sudo dnf install httpd php php-pdo php-mysqlnd mysql-server -y
+    ```
+
+    This installs:
+    - **httpd** — the Apache HTTP server
+    - **php** — the PHP interpreter
+    - **php-pdo** — PHP's database abstraction layer (required by the API)
+    - **php-mysqlnd** — the native MySQL driver for PDO
+    - **mysql-server** — MariaDB (fully compatible with MySQL syntax used by the app)
+  </Step>
+
+  <Step title="Start and Enable Services">
+    Enable both Apache and MySQL so they start automatically on every boot, and start them immediately:
+
+    ```bash
+    sudo systemctl enable --now httpd
+    sudo systemctl enable --now mysqld
+    ```
+
+    Verify both services are running:
+
+    ```bash
+    sudo systemctl status httpd
+    sudo systemctl status mysqld
+    ```
+
+    Both should report `active (running)`.
+  </Step>
+
+  <Step title="Copy Application Files">
+    Copy (or clone) the project into the Apache document root:
+
+    ```bash
+    sudo cp -r /path/to/registroComponentesMultimedia/* /var/www/html/
+    ```
+
+    After copying, your document root should contain at minimum:
+
+    ```
+    /var/www/html/
+    ├── api/
+    │   ├── config.php
+    │   ├── auth.php
+    │   ├── loans.php
+    │   ├── fix_auth.sh
+    │   └── sesiones/
+    ├── assets/
+    └── index.html
+    ```
+
+    <Note>
+      The `api/sesiones/` directory stores PHP session files. If it does not exist yet, create it before starting the app:
+
+      ```bash
+      sudo mkdir -p /var/www/html/api/sesiones
+      ```
+
+      File permissions for this directory are covered in the [Permissions guide](/deployment/permissions).
+    </Note>
+  </Step>
+
+  <Step title="Configure the Apache Virtual Host (Optional)">
+    For a production server with a domain name, create a virtual host configuration file at `/etc/httpd/conf.d/isbo.conf`:
+
+    ```bash
+    sudo nano /etc/httpd/conf.d/isbo.conf
+    ```
+
+    Minimal virtual host configuration:
+
+    ```apacheconf
+    <VirtualHost *:80>
+        ServerName your-domain-or-ip
+        DocumentRoot /var/www/html
+
+        <Directory /var/www/html>
+            AllowOverride All
+            Require all granted
+        </Directory>
+
+        ErrorLog  /var/log/httpd/isbo_error.log
+        CustomLog /var/log/httpd/isbo_access.log combined
+    </VirtualHost>
+    ```
+
+    Reload Apache to apply the change:
+
+    ```bash
+    sudo systemctl reload httpd
+    ```
+  </Step>
+
+  <Step title="Open the Firewall for HTTP Traffic">
+    CentOS 9 ships with `firewalld` enabled by default. Open port 80 permanently and reload the firewall rules:
+
+    ```bash
+    sudo firewall-cmd --permanent --add-service=http
+    sudo firewall-cmd --reload
+    ```
+
+    If your server also serves HTTPS (port 443), add it as well:
+
+    ```bash
+    sudo firewall-cmd --permanent --add-service=https
+    sudo firewall-cmd --reload
+    ```
+  </Step>
+
+  <Step title="Verify the Installation">
+    Open a browser and navigate to your server's IP address or domain name:
+
+    ```
+    http://<server-ip>/
+    ```
+
+    You should see the ISBO equipment registry login or home page. If you see the Apache default welcome page instead, either the files were not copied correctly or the virtual host configuration needs a reload.
+  </Step>
+</Steps>
+
+---
+
+## XAMPP — Local Development
+
+XAMPP provides a self-contained development environment that requires no system-level service management. It is the fastest way to run the application locally on Windows or Linux.
+
+<Steps>
+  <Step title="Download and Install XAMPP">
+    Download the XAMPP installer for your platform from [apachefriends.org](https://www.apachefriends.org/) and run the installer. During setup, ensure **Apache**, **MySQL**, and **PHP** components are selected.
+
+    Default install locations:
+
+    | Platform | Path |
+    |---|---|
+    | Windows | `C:\xampp` |
+    | Linux | `/opt/lampp` |
+  </Step>
+
+  <Step title="Start Apache and MySQL">
+    Open the **XAMPP Control Panel** (Windows) or run the manager from `/opt/lampp` (Linux), then click **Start** next to both **Apache** and **MySQL**.
+
+    On Linux you can also use the command line:
+
+    ```bash
+    sudo /opt/lampp/lampp start
+    ```
+  </Step>
+
+  <Step title="Copy Application Files to htdocs">
+    Place the project in the XAMPP document root:
+
+    <CodeGroup>
+      ```bash Windows (PowerShell)
+      Copy-Item -Recurse .\registroComponentesMultimedia\* C:\xampp\htdocs\isbo\
+      ```
+
+      ```bash Linux
+      sudo cp -r ./registroComponentesMultimedia/* /opt/lampp/htdocs/isbo/
+      ```
+    </CodeGroup>
+
+    The app will then be available at:
+
+    ```
+    http://localhost/isbo/
+    ```
+  </Step>
+
+  <Step title="Verify in Browser">
+    Open `http://localhost/isbo/` in your browser. If the page loads, the server environment is ready. Proceed to the [Database setup guide](/deployment/database) to create the schema.
+  </Step>
+</Steps>
+
+<Tip>
+  On Windows, XAMPP does not use SELinux or `firewalld`, so you can skip the firewall and permissions steps that apply only to CentOS. The `fix_auth.sh` script is not needed for XAMPP; see the [Permissions guide](/deployment/permissions) for manual XAMPP-specific steps.
+</Tip>

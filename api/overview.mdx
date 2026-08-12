@@ -1,0 +1,148 @@
+---
+title: "ISBO API Overview: PHP REST Endpoints for Equipment Loans"
+sidebarTitle: "Overview"
+description: "Overview of the ISBO equipment registry REST API: base URL, request format, session-based auth, response envelope, error codes, and the JavaScript API client."
+---
+
+The ISBO Registro de Equipamiento Multimedia exposes a lightweight REST API built with PHP. All endpoints live under the `api/` directory of the web root and accept JSON request bodies. The same origin serves both the frontend and the API, so no CORS configuration is required and browser session cookies work seamlessly.
+
+## Base URL
+
+All endpoints are relative to the web root of the application. Replace `http://your-server` with the actual host where the application is deployed.
+
+```
+http://your-server/api/loans.php
+http://your-server/api/auth.php
+```
+
+<Note>
+  There is no versioning prefix. All paths begin directly with `api/`.
+</Note>
+
+## Request Format
+
+Every request that carries a body (POST and PUT) must set the `Content-Type` header to `application/json` and send a UTF-8 encoded JSON payload.
+
+```bash
+Content-Type: application/json
+```
+
+GET requests pass parameters as URL query strings and carry no body.
+
+## Authentication
+
+Authentication is managed via **PHP session cookies**. The workflow is:
+
+1. Call `POST auth.php?action=login` with valid admin credentials.
+2. The server sets a session cookie in the `Set-Cookie` response header.
+3. All subsequent requests carry that cookie automatically when using `credentials: 'same-origin'` in `fetch`.
+4. Call `POST auth.php?action=logout` to destroy the session.
+
+Only admin-protected routes enforce session checks. The public loan creation and return endpoints work without any session.
+
+<Warning>
+  Session files are stored under `api/sesiones/` inside the project directory. Ensure that directory is writable by the web server process and is not publicly accessible.
+</Warning>
+
+## Response Format
+
+Every response — success or error — is a JSON object with `Content-Type: application/json`.
+
+**Success** responses return HTTP `200` and either a confirmation message object or a data array:
+
+```json
+{ "message": "Préstamo registrado correctamente", "id": 42 }
+```
+
+```json
+[
+  { "id": 1, "equipment_details": "Ceibalita 001", "checkout_time": "2024-03-15 08:30:00" }
+]
+```
+
+**Error** responses return an object with a single `"error"` key and an appropriate HTTP status code:
+
+```json
+{ "error": "Faltan campos obligatorios" }
+```
+
+## HTTP Status Codes
+
+| Code | Meaning                                                                 |
+| ---- | ----------------------------------------------------------------------- |
+| 200  | Success — operation completed, body contains result                     |
+| 400  | Bad Request — missing or invalid parameters                             |
+| 401  | Unauthorized — admin session required but not present                   |
+| 404  | Not Found — the referenced loan record does not exist or has no changes |
+| 405  | Method Not Allowed — HTTP verb not supported for that endpoint          |
+| 500  | Internal Server Error — database or server-side failure                 |
+
+## Endpoint Summary
+
+| Method | Path                                        | Auth Required                     | Description                              |
+| ------ | ------------------------------------------- | --------------------------------- | ---------------------------------------- |
+| POST   | `auth.php?action=login`                     | No                                | Admin login — creates a PHP session      |
+| GET    | `auth.php?action=check`                     | No                                | Check current session status             |
+| POST   | `auth.php?action=logout`                    | Yes (session)                     | Destroy the current PHP session          |
+| POST   | `loans.php`                                 | No                                | Create a new equipment loan              |
+| GET    | `loans.php?action=active_by_ci&ci={ci}`     | No                                | Get all active loans for a given CI      |
+| PUT    | `loans.php`                                 | Partial — see note below          | Return a loan or update loan data        |
+| GET    | `loans.php?action=pending`                  | Yes                               | Get all currently active (pending) loans |
+| GET    | `loans.php?action=all`                      | Yes                               | Get full loan history                    |
+| GET    | `loans.php?action=stats`                    | Yes                               | Get dashboard KPI statistics             |
+
+<Note>
+  The `PUT loans.php` endpoint has three distinct operating modes determined by the request body. Returning a loan with a signature (`return_signature` present) is **public**. Changing `status` or editing loan fields requires an **active admin session**.
+</Note>
+
+## JavaScript API Client
+
+The file `assets/js/api.js` provides a global `API` object that wraps every endpoint with `fetch` and sets `credentials: 'same-origin'` so PHP session cookies are included automatically. The internal `API.request(endpoint, method, data)` method handles JSON serialization and throws a JavaScript `Error` when the server returns a non-OK status or an `"error"` key.
+
+### Available Methods
+
+| Method                                               | Underlying call                            |
+| ---------------------------------------------------- | ------------------------------------------ |
+| `API.login(username, password)`                      | `POST auth.php?action=login`               |
+| `API.checkAuth()`                                    | `GET auth.php?action=check`                |
+| `API.logout()`                                       | `POST auth.php?action=logout`              |
+| `API.createLoan(loanData)`                           | `POST loans.php`                           |
+| `API.getActiveLoansByCI(ci)`                         | `GET loans.php?action=active_by_ci&ci={ci}`|
+| `API.returnLoan(id, signatureBase64, observation)`   | `PUT loans.php` (public return)            |
+| `API.updateLoanStatus(id, status, observation)`      | `PUT loans.php` (admin status change)      |
+| `API.updateLoanDetails(id, updates)`                 | `PUT loans.php` (admin field update)       |
+| `API.getPendingLoans()`                              | `GET loans.php?action=pending`             |
+| `API.getAllLoans()`                                  | `GET loans.php?action=all`                 |
+| `API.getStats()`                                     | `GET loans.php?action=stats`               |
+
+### Usage Example
+
+```javascript
+// Check session on page load
+const auth = await API.checkAuth();
+if (auth.logged_in) {
+  console.log('Logged in as', auth.username);
+}
+
+// Create a loan (public)
+const loan = await API.createLoan({
+  ci: '12345678',
+  name: 'Ana García',
+  group_name: '3°A',
+  equipment_details: 'Ceibalita 001, Cable HDMI',
+  checkout_signature: checkoutSignature.getBase64()
+});
+console.log('New loan ID:', loan.id);
+```
+
+## CORS
+
+Since the HTML frontend is served from the **same origin** as the PHP API, there is no cross-origin request scenario. No `Access-Control-Allow-Origin` headers are set or needed. If you plan to call this API from an external domain, you would need to add CORS headers manually in `config.php`.
+
+## Signature Pad
+
+The `assets/js/signature.js` file defines a `SignaturePad` class that renders a drawable HTML5 `<canvas>`. When the user finishes signing, `signaturePad.getBase64()` returns the canvas contents as a **Base64-encoded PNG data URL** (e.g., `data:image/png;base64,...`). This string is passed directly as the `checkout_signature` or `return_signature` field in API requests and stored verbatim in the database.
+
+<Tip>
+  Call `signaturePad.isEmpty` before submitting to guard against accidental empty-signature submissions.
+</Tip>

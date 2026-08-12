@@ -1,0 +1,178 @@
+---
+title: "Install ISBO Equipment Registry on a LAMP Server"
+sidebarTitle: "Installation"
+description: "Step-by-step guide to deploying the ISBO equipment registry on XAMPP, WAMP (local dev), or a production Apache/PHP/MySQL stack."
+---
+
+The ISBO Equipment Registry is a single-folder PHP application with no composer dependencies, no npm build step, and no framework — only Apache, PHP, and MySQL are required. The instructions below cover two deployment paths: a local development environment using XAMPP or WAMP, and a production LAMP server on CentOS/RHEL/Debian.
+
+## Prerequisites
+
+Before you begin, ensure the following are available on your server or workstation:
+
+| Requirement | Minimum version | Notes |
+|---|---|---|
+| Apache HTTP Server | 2.4+ | `mod_rewrite` optional |
+| PHP | 7.4+ | `pdo_mysql` extension must be enabled |
+| MySQL or MariaDB | MySQL 5.7+ / MariaDB 10.3+ | |
+| Git | Any | Optional — you can copy files manually |
+
+<Note>
+  On PHP 7.4+ the `pdo_mysql` extension is bundled but may need to be enabled in `php.ini`. Uncomment or add `extension=pdo_mysql` and restart Apache.
+</Note>
+
+## Installation paths
+
+<CodeGroup>
+
+```bash XAMPP / WAMP (local dev)
+# 1. Open a terminal in the XAMPP/WAMP htdocs directory
+#    Windows (XAMPP):  C:\xampp\htdocs
+#    macOS/Linux XAMPP: /opt/lampp/htdocs
+
+# 2. Clone the repository (or copy the folder manually)
+git clone https://github.com/gavafue/registroComponentesMultimedia.git
+
+# 3. Make sure Apache and MySQL are running in the XAMPP/WAMP control panel
+# 4. Open http://localhost/registroComponentesMultimedia/index.html
+```
+
+```bash Production LAMP — CentOS / RHEL / Debian
+# 1. Install dependencies (CentOS/RHEL example)
+sudo dnf install -y httpd php php-pdo php-mysqlnd mariadb-server
+
+# Enable and start services
+sudo systemctl enable --now httpd mariadb
+
+# 2. Deploy files
+sudo git clone https://github.com/gavafue/registroComponentesMultimedia.git \
+    /var/www/html/registroComponentesMultimedia
+
+# 3. Grant Apache write access for the auto-created session directory
+sudo chown -R apache:apache /var/www/html/registroComponentesMultimedia/api
+sudo chmod -R 755 /var/www/html/registroComponentesMultimedia/api
+```
+
+</CodeGroup>
+
+## Set up the database
+
+<Steps>
+  <Step title="Log in to MySQL">
+    ```bash
+    mysql -u root -p
+    ```
+  </Step>
+
+  <Step title="Create the database">
+    ```sql
+    CREATE DATABASE IF NOT EXISTS isbo_prestamos
+      CHARACTER SET utf8
+      COLLATE utf8_general_ci;
+
+    USE isbo_prestamos;
+    ```
+  </Step>
+
+  <Step title="Create the loans table">
+    The `loans` table stores every checkout and return event. `checkout_signature` and `return_signature` hold PNG images as Base64-encoded data-URIs, so the column type is `LONGTEXT`.
+
+    ```sql
+    CREATE TABLE loans (
+      id                  INT UNSIGNED     NOT NULL AUTO_INCREMENT,
+      ci                  VARCHAR(20)      NOT NULL,
+      name                VARCHAR(255)     NOT NULL,
+      group_name          VARCHAR(100)         NULL,
+      equipment_details   TEXT             NOT NULL,
+      checkout_time       DATETIME             NULL,
+      checkout_signature  LONGTEXT             NULL,
+      return_time         DATETIME             NULL,
+      return_signature    LONGTEXT             NULL,
+      return_observation  TEXT                 NULL,
+      status              ENUM('active','returned') NOT NULL DEFAULT 'active',
+      PRIMARY KEY (id),
+      INDEX idx_ci     (ci),
+      INDEX idx_status (status),
+      INDEX idx_checkout_time (checkout_time)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    ```
+  </Step>
+
+  <Step title="Create the users table">
+    The `users` table holds admin accounts. Passwords are stored as bcrypt hashes produced by PHP's `password_hash()`.
+
+    ```sql
+    CREATE TABLE users (
+      id            INT UNSIGNED  NOT NULL AUTO_INCREMENT,
+      username      VARCHAR(100)  NOT NULL UNIQUE,
+      password_hash VARCHAR(255)  NOT NULL,
+      PRIMARY KEY (id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    ```
+  </Step>
+
+  <Step title="Create the first admin user">
+    You need to generate the bcrypt hash outside of MySQL because MySQL does not use PHP's `password_hash()` format. Use the PHP CLI:
+
+    ```bash
+    php -r "echo password_hash('your_chosen_password', PASSWORD_DEFAULT) . PHP_EOL;"
+    ```
+
+    Copy the printed hash (it begins with `$2y$`), then insert the admin user:
+
+    ```sql
+    INSERT INTO users (username, password_hash)
+    VALUES ('admin', '$2y$10$PASTE_THE_HASH_YOU_GENERATED_HERE');
+    ```
+
+    <Tip>
+      Choose a strong password at least 12 characters long. The `password_hash()` function automatically salts the hash — you do not need to add a salt manually.
+    </Tip>
+  </Step>
+
+  <Step title="Update api/config.php with your database credentials">
+    Open `api/config.php` and change the four connection variables to match your MySQL setup. See the [Configuration guide](/configuration) for the full file reference and all available options.
+
+    ```php
+    $host     = 'localhost';
+    $db_name  = 'isbo_prestamos';
+    $username = 'root';          // Your MySQL username
+    $password = 'your_password'; // Your MySQL password
+    ```
+  </Step>
+</Steps>
+
+## Directory permissions
+
+The application auto-creates `api/sesiones/` on first request to store PHP session files. The directory that contains `api/` must be writable by the web-server user:
+
+```bash
+# Apache on CentOS/RHEL
+sudo chown -R apache:apache /var/www/html/registroComponentesMultimedia/api
+sudo chmod 755 /var/www/html/registroComponentesMultimedia/api
+
+# Apache on Debian/Ubuntu
+sudo chown -R www-data:www-data /var/www/html/registroComponentesMultimedia/api
+```
+
+<Warning>
+  If the `api/sesiones/` directory cannot be created (permission denied), PHP's `session_start()` will fail and all admin login attempts will return a 500 error.
+</Warning>
+
+## Verify the installation
+
+Open a browser and navigate to your installation URL:
+
+```
+# Local XAMPP
+http://localhost/registroComponentesMultimedia/index.html
+
+# Production server
+http://your-server-ip-or-domain/registroComponentesMultimedia/index.html
+```
+
+You should see the ISBO header with the live Montevideo clock ticking, and two tabs: **Retirar** and **Devolver**. To verify the admin panel, click the lock icon (🔒) in the header, enter the username and password you created in Step 5, and confirm the *Panel de Control* dashboard loads with all KPI metric cards showing.
+
+<Note>
+  If the page loads but form submissions return a JSON error about a database connection, double-check the credentials in `api/config.php` and confirm the MySQL service is running.
+</Note>

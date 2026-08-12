@@ -1,0 +1,158 @@
+---
+title: "Authentication API: Admin Login, Logout, and Session Check"
+sidebarTitle: "Authentication"
+description: "Reference for auth.php endpoints: POST login with username/password, GET session status check, and POST logout. All admin routes require an active PHP session."
+---
+
+The `auth.php` file exposes three endpoints that manage administrator identity using PHP native sessions. After a successful login the server sets a session cookie; all subsequent requests from the same browser automatically present that cookie, granting access to protected loan routes. Sessions are stored on disk under `api/sesiones/` and are started via `session_start()` on every API request through `config.php`.
+
+---
+
+## POST `auth.php?action=login`
+
+Authenticates an admin user against the `users` table using `password_verify`. On success a PHP session is created and the session cookie is written to the response.
+
+### Request Body
+
+<ParamField body="username" type="string" required>
+  The admin account username.
+</ParamField>
+
+<ParamField body="password" type="string" required>
+  The plain-text password. Verified against the stored bcrypt hash.
+</ParamField>
+
+### Responses
+
+<ResponseField name="message" type="string">
+  Present on success. Value: `"Login exitoso"`.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Present on failure. See status codes below.
+</ResponseField>
+
+| Status | Body                                   | Condition                              |
+| ------ | -------------------------------------- | -------------------------------------- |
+| 200    | `{ "message": "Login exitoso" }`       | Credentials valid, session created     |
+| 400    | `{ "error": "Faltan credenciales" }`   | `username` or `password` missing       |
+| 401    | `{ "error": "Credenciales inválidas" }`| Username not found or password wrong   |
+
+<Warning>
+  The 401 response does not distinguish between an unknown username and a wrong password to avoid user enumeration.
+</Warning>
+
+### curl Example
+
+```bash
+curl -c cookies.txt -X POST "http://your-server/api/auth.php?action=login" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "mypassword"}'
+```
+
+Save the cookie jar with `-c cookies.txt` and replay it with `-b cookies.txt` on subsequent requests.
+
+### JavaScript Client
+
+```javascript
+try {
+  const result = await API.login('admin', 'mypassword');
+  console.log(result.message); // "Login exitoso"
+} catch (err) {
+  console.error('Login failed:', err.message);
+}
+```
+
+---
+
+## GET `auth.php?action=check`
+
+Returns the current session state. Designed to be called at application startup so the UI can decide whether to show the admin panel or the public view.
+
+### Request
+
+No request body. No query parameters beyond `action=check`.
+
+### Responses
+
+<ResponseField name="logged_in" type="boolean">
+  `true` when an active admin session exists, `false` otherwise.
+</ResponseField>
+
+<ResponseField name="username" type="string">
+  The authenticated admin's username. Only present when `logged_in` is `true`.
+</ResponseField>
+
+| Status | Body                                              | Condition               |
+| ------ | ------------------------------------------------- | ----------------------- |
+| 200    | `{ "logged_in": true, "username": "admin" }`      | Active session found    |
+| 200    | `{ "logged_in": false }`                          | No active session       |
+
+<Note>
+  This endpoint **always** returns HTTP 200. It never throws a 401, so the frontend can call it safely at startup without a try/catch. Check the `logged_in` boolean in the response body instead.
+</Note>
+
+### curl Example
+
+```bash
+# With an active session cookie saved by a prior login call:
+curl -b cookies.txt "http://your-server/api/auth.php?action=check"
+```
+
+```bash
+# Without a session (cold check):
+curl "http://your-server/api/auth.php?action=check"
+```
+
+### JavaScript Client
+
+```javascript
+const { logged_in, username } = await API.checkAuth();
+if (logged_in) {
+  console.log(`Session active for: ${username}`);
+} else {
+  console.log('No active session.');
+}
+```
+
+---
+
+## POST `auth.php?action=logout`
+
+Destroys the current PHP session using `session_destroy()`. After this call the session cookie becomes invalid and protected routes will return 401.
+
+### Request
+
+No request body is required.
+
+### Responses
+
+<ResponseField name="message" type="string">
+  Present on success. Value: `"Logout exitoso"`.
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Present when the action or HTTP method is not recognised. Value: `"Acción no válida"`.
+</ResponseField>
+
+| Status | Body                                  | Condition                              |
+| ------ | ------------------------------------- | -------------------------------------- |
+| 200    | `{ "message": "Logout exitoso" }`     | Session destroyed successfully         |
+| 400    | `{ "error": "Acción no válida" }`     | Wrong HTTP method or unrecognised action |
+
+<Tip>
+  Calling logout when no session exists still returns 200 — `session_destroy()` is idempotent in this context.
+</Tip>
+
+### curl Example
+
+```bash
+curl -b cookies.txt -X POST "http://your-server/api/auth.php?action=logout"
+```
+
+### JavaScript Client
+
+```javascript
+await API.logout();
+console.log('Logged out successfully.');
+```

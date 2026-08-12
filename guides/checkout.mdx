@@ -1,0 +1,196 @@
+---
+title: "Register an Equipment Checkout with Digital Signature"
+sidebarTitle: "Checkout"
+description: "How students register a multimedia equipment checkout in ISBO: filling the form, listing equipment items, capturing a digital signature, and confirming the loan."
+---
+
+The **Registrar Retiro** screen is the main entry point for students borrowing multimedia equipment at Instituto Superior Brazo Oriental. From here a student enters their identity details, describes the items being taken, draws a digital signature, and submits the loan record — all without requiring staff intervention. The checkout form lives in the `view-checkout` section of the single-page app and is always the default active view when the page loads.
+
+## Overview of the Checkout Flow
+
+When a student arrives at the equipment desk they open the app in a browser (or on the dedicated kiosk device). The **Retirar** tab is already active. They fill in their personal data, type or quick-insert the equipment they are borrowing, sign with a finger or mouse, then tap **Confirmar Retiro**. The record is persisted immediately to the MySQL database via a `POST` to `api/loans.php` and a green success toast confirms the submission.
+
+<Steps>
+  <Step title="Open the Retirar tab">
+    The app loads with the **Retirar** tab active by default. If you are on a different view, click the **Retirar** button in the top navigation bar.
+  </Step>
+
+  <Step title="Enter your Cédula de Identidad">
+    Type your Uruguayan national ID number (cédula) in the **Cédula de Identidad** field. The field accepts only digits and hyphens, with a minimum of 7 characters and a maximum of 8.
+
+    ```html
+    <input type="text" id="ci" name="ci" required
+           placeholder="Ej: 12345678"
+           minlength="7" maxlength="8"
+           pattern="[0-9\-]+"
+           title="Solo números y sin puntos ni guiones">
+    ```
+
+    <Warning>
+      Entering fewer than 7 or more than 8 digits, or using letters or punctuation other than a hyphen, will prevent the form from submitting. The pattern enforces `[0-9\-]+`.
+    </Warning>
+  </Step>
+
+  <Step title="Fill in Nombre y Apellido (and optionally Grupo)">
+    Enter your full name in the **Nombre y Apellido** field. This is a required free-text field with no length restriction enforced at the HTML level.
+
+    The **Grupo** field (e.g. `3º Informática`) is **optional**. Leave it blank if it does not apply. Both fields disable browser autocomplete and autocapitalize to avoid unwanted corrections.
+  </Step>
+
+  <Step title="Describe the equipment being borrowed">
+    Use the **Equipamiento a Retirar** textarea to list every item you are taking. You can type freely or click any of the **Frecuentes** quick-insert buttons to append a common keyword to the field.
+
+    | Button label | Appended text  |
+    |---|---|
+    | Ceibalita    | `Ceibalita`    |
+    | Mouse        | `Mouse`        |
+    | Control      | `Control`      |
+    | Cable HDMI   | `Cable HDMI`   |
+    | Parlante     | `Parlante`     |
+    | Cargador     | `Cargador`     |
+
+    Each button calls `appendEquipmentKeyword()` which smartly separates items with `, ` (or a single space if the field already ends with a comma or newline):
+
+    ```javascript
+    function appendEquipmentKeyword(keyword) {
+        const field = document.getElementById('equipment');
+        if (!field) return;
+        const current = field.value.trim();
+        if (!current) {
+            field.value = keyword;
+        } else {
+            const separator = current.endsWith(',') || current.endsWith('\n') ? ' ' : ', ';
+            field.value = `${current}${separator}${keyword}`;
+        }
+        field.focus();
+    }
+    ```
+
+    <Tip>
+      You can combine quick-insert buttons and manual typing. For example, click **Ceibalita**, then manually add the asset number: `Ceibalita 042, Cable HDMI`.
+    </Tip>
+  </Step>
+
+  <Step title="Draw your digital signature">
+    Draw your signature inside the **Firma** canvas area using a mouse on desktop or your finger on a touch screen. The signature pad is implemented by the custom `SignaturePad` class (defined in `assets/js/signature.js`) attached to the `checkout-signature-pad` canvas element.
+
+    ```javascript
+    // Initialised on DOMContentLoaded in signature.js
+    window.checkoutSignature = new SignaturePad('checkout-signature-pad');
+    ```
+
+    The pad draws in ISBO blue (`#00458a`) with rounded line caps for a natural feel. It handles both mouse events (`mousedown`, `mousemove`, `mouseup`) and touch events (`touchstart`, `touchmove`, `touchend`), preventing page scroll while drawing.
+
+    If you make a mistake, click the **trash icon** button (`data-canvas="checkout-signature-pad"`) to clear the canvas and start again.
+
+    <Warning>
+      The signature is **required**. Submitting the form without drawing anything triggers an error toast: *"Por favor, dibuja tu firma"* and the request is not sent.
+    </Warning>
+  </Step>
+
+  <Step title="Submit the form">
+    Click **Confirmar Retiro**. The button is temporarily disabled and shows a spinner while the request is in flight.
+
+    The form `submit` handler in `app.js` assembles the payload and calls `API.createLoan()`:
+
+    ```javascript
+    const formData = {
+        ci: document.getElementById('ci').value,
+        name: document.getElementById('name').value,
+        group_name: document.getElementById('group').value,
+        equipment_details: document.getElementById('equipment').value,
+        checkout_signature: window.checkoutSignature.getBase64()
+    };
+
+    await API.createLoan(formData);
+    ```
+
+    `API.createLoan()` sends a `POST` request to `api/loans.php`:
+
+    ```javascript
+    async createLoan(loanData) {
+        return this.request('loans.php', 'POST', loanData);
+    }
+    ```
+
+    The PHP endpoint inserts the record with `status = 'active'` and the current server timestamp as `checkout_time`:
+
+    ```php
+    $stmt = $pdo->prepare(
+        "INSERT INTO loans
+           (ci, name, group_name, equipment_details, checkout_time, checkout_signature, status)
+         VALUES (?, ?, ?, ?, NOW(), ?, 'active')"
+    );
+    $stmt->execute([
+        $data->ci,
+        $data->name,
+        isset($data->group_name) ? $data->group_name : null,
+        $data->equipment_details,
+        $data->checkout_signature
+    ]);
+    ```
+  </Step>
+
+  <Step title="Confirmation and reset">
+    On success the app:
+
+    - Shows a green toast: *"✓ ¡Registrado exitosamente!"*
+    - Resets the entire form (`e.target.reset()`) and clears the signature canvas
+    - Scrolls smoothly back to the top of the page
+    - Returns focus to the **Cédula de Identidad** field so the next student can start immediately
+
+    On touch-capable devices a short haptic feedback pattern is triggered via `navigator.vibrate([100, 50, 100])`.
+  </Step>
+</Steps>
+
+## Field Reference
+
+| Field | Element ID | Required | Constraints |
+|---|---|---|---|
+| Cédula de Identidad | `ci` | Yes | 7–8 chars, pattern `[0-9\-]+` |
+| Nombre y Apellido | `name` | Yes | Free text |
+| Grupo | `group` | No | Free text |
+| Equipamiento a Retirar | `equipment` | Yes | Multi-line textarea |
+| Firma | `checkout-signature-pad` | Yes | Must not be empty |
+
+## API Request / Response
+
+**Request**
+
+```http
+POST api/loans.php
+Content-Type: application/json
+
+{
+  "ci": "12345678",
+  "name": "Ana García",
+  "group_name": "3º Informática",
+  "equipment_details": "Ceibalita 042, Cable HDMI",
+  "checkout_signature": "data:image/png;base64,iVBORw0KGgo..."
+}
+```
+
+**Success response** — HTTP 200
+
+```json
+{
+  "message": "Préstamo registrado correctamente",
+  "id": 47
+}
+```
+
+**Error response** — HTTP 400
+
+```json
+{
+  "error": "Faltan campos obligatorios"
+}
+```
+
+## Keyboard Navigation
+
+The three text fields (`ci`, `name`, `group`) support **Enter** to advance to the next field. Pressing **Enter** while in the `group` field smoothly scrolls to the signature area. The **Limpiar** button (`#btn-clear-checkout`) resets the form and signature without submitting.
+
+<Note>
+  The inactivity auto-return timer described in the [Return guide](/guides/return) applies only to the **Devolver** view. The checkout view has no automatic timeout — it stays active until manually navigated away.
+</Note>

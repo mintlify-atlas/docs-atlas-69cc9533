@@ -1,0 +1,266 @@
+---
+title: "Fix File Permissions and SELinux Contexts on CentOS"
+sidebarTitle: "Permissions"
+description: "How to set correct Apache file ownership, secure api/config.php, configure SELinux write contexts for the sessions directory, and use fix_auth.sh on CentOS 9."
+---
+
+Getting file permissions right is one of the most common stumbling blocks when deploying a PHP application on CentOS or RHEL. Apache runs as the `apache` user and group — it must be able to read every PHP and static file in the document root, and it must be able to write session files to `api/sesiones/`. On top of standard Unix permissions, CentOS 9 enforces SELinux security policies that can silently block writes even when the Unix permissions look correct. This guide explains how to handle both layers.
+
+## Why Permissions Matter
+
+Two things can go wrong independently:
+
+1. **Unix ownership / mode** — If files are owned by another user or have restrictive modes, Apache returns HTTP 403 Forbidden.
+2. **SELinux context** — Even with correct Unix permissions, SELinux can deny Apache write access to directories it has not been explicitly told to trust, causing authentication failures (HTTP 401) or session errors that are only visible in `/var/log/httpd/error_log`.
+
+The project ships `api/fix_auth.sh` to automate all four repair steps in one go.
+
+---
+
+## Using fix_auth.sh (Recommended for CentOS 9 / RHEL)
+
+<Warning>
+  `fix_auth.sh` must be run as **root**. It modifies ownership and SELinux policies system-wide under `/var/www/html`. Review the script contents before running it on a production server that hosts other applications — the `chown -R apache:apache` call affects everything under the document root.
+</Warning>
+
+### What the Script Does
+
+The script performs four numbered steps:
+
+<Steps>
+  <Step title="Set owner and base permissions">
+    Recursively sets ownership of the entire `/var/www/html` tree to `apache:apache`, then applies safe base permissions: `755` on all directories and `644` on all files. This ensures Apache can traverse directories and read files without exposing write access to the world.
+
+    ```bash
+    chown -R apache:apache /var/www/html
+    find /var/www/html -type d -exec chmod 755 {} \;
+    find /var/www/html -type f -exec chmod 644 {} \;
+    ```
+  </Step>
+
+  <Step title="Secure critical files">
+    Two paths receive special treatment after the base pass:
+
+    - **`api/sesiones/`** is set to `775` so the `apache` group can write session files into it.
+    - **`api/config.php`** is set to `600` (owner-read/write only) so the database credentials are not readable by other system users.
+
+    ```bash
+    chmod 775 /var/www/html/api/sesiones
+    chmod 600 /var/www/html/api/config.php
+    ```
+  </Step>
+
+  <Step title="Repair SELinux contexts">
+    If SELinux is enabled (i.e., `getenforce` does not return `Disabled`), the script:
+
+    1. Runs `restorecon -R` to reset the entire document root to its default SELinux context (`httpd_sys_content_t`).
+    2. Applies the `httpd_sys_rw_content_t` type to `api/sesiones/` so Apache is explicitly allowed to create and modify files there.
+    3. Enables two SELinux booleans:
+       - `httpd_can_network_connect` — allows Apache to open outbound network connections (needed if the app ever calls external services).
+       - `httpd_graceful_shutdown` — allows Apache to perform graceful restarts under SELinux enforcement.
+
+    ```bash
+    restorecon -R -v /var/www/html
+    semanage fcontext -a -t httpd_sys_rw_content_t "/var/www/html/api/sesiones(/.*)?"
+    chcon -R -t httpd_sys_rw_content_t /var/www/html/api/sesiones
+    setsebool -P httpd_can_network_connect 1
+    setsebool -P httpd_graceful_shutdown 1
+    ```
+  </Step>
+
+  <Step title="Restart web services">
+    Restarts `httpd`. If `php-fpm` is active (used in some CentOS configurations), it is restarted as well so the new permissions and SELinux contexts take immediate effect.
+
+    ```bash
+    systemctl restart httpd
+    # Only if php-fpm is running:
+    systemctl restart php-fpm
+    ```
+  </Step>
+</Steps>
+
+### Running the Script
+
+After copying the project files to `/var/www/html`, run the script with `sudo`:
+
+```bash
+sudo bash /var/www/html/api/fix_auth.sh
+```
+
+The script prints colour-coded progress messages for each step. A green `[OK]` line after each phase means it succeeded. A red `[ERROR]` line means something went wrong — check the message and correct it before re-running.
+
+### Full Script Listing
+
+```bash
+#!/bin/bash
+
+# Colores para la salida en consola
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m' # Sin color
+
+HTML_DIR="/var/www/html"
+SESIONES_DIR="$HTML_DIR/api/sesiones"
+CONFIG_FILE="$HTML_DIR/api/config.php"
+
+echo -e "${YELLOW}=== Iniciando script de reparación de entorno para Auth ===${NC}"
+
+# 1. Verificar que el script corra como root
+if [ "$EUID" -ne 0 ]; then
+  echo -e "${RED}[ERROR] Este script debe ejecutarse como root (sudo).${NC}"
+  exit 1
+fi
+
+# 2. Corregir Propietario y Permisos Generales
+echo -e "\n${YELLOW}[1/4] Ajustando propietario (apache:apache) y permisos...${NC}"
+if [ -d "$HTML_DIR" ]; then
+    chown -R apache:apache $HTML_DIR
+    find $HTML_DIR -type d -exec chmod 755 {} \;
+    find $HTML_DIR -type f -exec chmod 644 {} \;
+    echo -e "${GREEN}[OK] Propietario y permisos base aplicados.${NC}"
+else
+    echo -e "${RED}[ERROR] No se encontró el directorio $HTML_DIR${NC}"
+    exit 1
+fi
+
+# 3. Asegurar la carpeta de sesiones y archivo de configuración
+echo -e "\n${YELLOW}[2/4] Asegurando archivos críticos...${NC}"
+if [ -d "$SESIONES_DIR" ]; then
+    chmod 775 "$SESIONES_DIR"
+    echo -e "${GREEN}[OK] Permisos de la carpeta de sesiones ajustados a 775.${NC}"
+else
+    echo -e "${YELLOW}[AVISO] No se encontró la carpeta 'api/sesiones'. Si usas sesiones nativas de PHP, podría ser un problema.${NC}"
+fi
+
+if [ -f "$CONFIG_FILE" ]; then
+    chmod 600 "$CONFIG_FILE"
+    echo -e "${GREEN}[OK] Archivo config.php protegido (600).${NC}"
+fi
+
+# 4. Reparar Contextos de SELinux (Crucial en CentOS 9)
+echo -e "\n${YELLOW}[3/4] Reparando políticas y contextos de SELinux...${NC}"
+if command -v getenforce &> /dev/null; then
+    STATUS=$(getenforce)
+    echo -e "Estado actual de SELinux: ${YELLOW}$STATUS${NC}"
+
+    if [ "$STATUS" != "Disabled" ]; then
+        restorecon -R -v $HTML_DIR > /dev/null
+
+        if [ -d "$SESIONES_DIR" ]; then
+            semanage fcontext -a -t httpd_sys_rw_content_t "$SESIONES_DIR(/.*)?" 2>/dev/null
+            chcon -R -t httpd_sys_rw_content_t "$SESIONES_DIR"
+            echo -e "${GREEN}[OK] Contexto de escritura aplicado a 'api/sesiones'.${NC}"
+        fi
+
+        setsebool -P httpd_can_network_connect 1 2>/dev/null
+        setsebool -P httpd_graceful_shutdown 1 2>/dev/null
+        echo -e "${GREEN}[OK] Booleans de SELinux para Apache actualizados.${NC}"
+    else
+        echo -e "${YELLOW}[AVISO] SELinux está deshabilitado. Omitiendo este paso.${NC}"
+    fi
+else
+    echo -e "${YELLOW}[AVISO] SELinux no está instalado en este sistema.${NC}"
+fi
+
+# 5. Reiniciar Servicios para aplicar cambios
+echo -e "\n${YELLOW}[4/4] Reiniciando servicios web...${NC}"
+systemctl restart httpd
+if systemctl is-active --quiet php-fpm; then
+    systemctl restart php-fpm
+    echo -e "${GREEN}[OK] Apache y PHP-FPM reiniciados correctamente.${NC}"
+else
+    echo -e "${GREEN}[OK] Apache reiniciado correctamente.${NC}"
+fi
+
+echo -e "\n${GREEN}=== Reparación de permisos y sistema completada ===${NC}"
+echo -e "${YELLOW}Nota:${NC} Si el error 401 persiste, revisa los logs en vivo usando el siguiente comando:"
+echo -e "${GREEN}tail -f /var/log/httpd/error_log${NC}"
+```
+
+---
+
+## Manual Steps (XAMPP on Linux or Windows)
+
+`fix_auth.sh` is designed for a CentOS / RHEL system with Apache running as the `apache` user. For XAMPP environments, apply permissions manually.
+
+<Steps>
+  <Step title="Create the sesiones directory if it does not exist">
+    <Note>
+      `api/config.php` automatically calls `mkdir()` on startup if `api/sesiones/` is missing, but the directory must be writable by the web server user for that call to succeed. Pre-creating it is the safest approach.
+    </Note>
+
+    <CodeGroup>
+      ```bash XAMPP on Linux
+      sudo mkdir -p /opt/lampp/htdocs/isbo/api/sesiones
+      sudo chown -R daemon:daemon /opt/lampp/htdocs/isbo/
+      sudo chmod 775 /opt/lampp/htdocs/isbo/api/sesiones
+      sudo chmod 600 /opt/lampp/htdocs/isbo/api/config.php
+      ```
+
+      ```powershell XAMPP on Windows
+      # No Unix permissions needed — XAMPP on Windows runs as your user account.
+      # Simply ensure the sesiones folder exists:
+      New-Item -ItemType Directory -Force -Path C:\xampp\htdocs\isbo\api\sesiones
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Protect api/config.php">
+    On Linux-based XAMPP, restrict config.php so only the web server process can read it:
+
+    ```bash
+    sudo chmod 600 /opt/lampp/htdocs/isbo/api/config.php
+    ```
+
+    On Windows, right-click `config.php` → **Properties** → **Security** and remove read access for all accounts except the SYSTEM account and your own user.
+  </Step>
+</Steps>
+
+---
+
+## Checking SELinux Status
+
+To see whether SELinux is active on your server:
+
+```bash
+getenforce
+```
+
+Possible outputs:
+
+| Output | Meaning |
+|---|---|
+| `Enforcing` | SELinux is active and blocking unauthorised access. Run `fix_auth.sh` or the manual `semanage`/`chcon` commands. |
+| `Permissive` | SELinux logs violations but does not block them. Useful for debugging. |
+| `Disabled` | SELinux is off. The script skips all SELinux steps automatically. |
+
+---
+
+## Viewing Apache Error Logs
+
+If the application returns HTTP 401, 403, or 500 errors after deployment, inspect the Apache error log in real time:
+
+```bash
+tail -f /var/log/httpd/error_log
+```
+
+SELinux denials appear as `AVC` entries in this log (or in `/var/log/audit/audit.log`) and look like:
+
+```
+type=AVC msg=audit(...): avc: denied { write } for pid=... comm="httpd" ...
+    tcontext=...:httpd_sys_content_t tclass=dir
+```
+
+If you see such a message targeting `api/sesiones`, re-run `fix_auth.sh` or apply the `chcon` command from Step 3 manually.
+
+<Note>
+  If `api/sesiones/` does not exist at all when `fix_auth.sh` runs, the script will warn you and skip the SELinux context step for that directory. Create the directory first, then re-run the script:
+
+  ```bash
+  sudo mkdir -p /var/www/html/api/sesiones
+  sudo chown apache:apache /var/www/html/api/sesiones
+  sudo chmod 775 /var/www/html/api/sesiones
+  sudo bash /var/www/html/api/fix_auth.sh
+  ```
+</Note>

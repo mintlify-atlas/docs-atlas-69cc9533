@@ -1,0 +1,87 @@
+---
+title: "ISBO Equipment Registry: Track Multimedia Loans"
+sidebarTitle: "Introduction"
+description: "Learn how ISBO Registro de Equipamiento Multimedia works, what problems it solves, and how its PHP and JavaScript components fit together."
+---
+
+The ISBO Registro de Equipamiento Multimedia is a web-based loan management system built for Instituto Superior Brazo Oriental (ISBO) in Uruguay. It gives students a fast, self-service kiosk experience for checking out and returning multimedia equipment — projectors, laptops (Ceibalitas), HDMI cables, remote controls, and more — while giving staff a secure admin panel to monitor activity, flag overdue items, and export signed records as PDF reports.
+
+## Who uses it
+
+The system is designed for two audiences:
+
+- **Students** interact with the two public-facing forms to register an equipment checkout (*Retirar*) or process a return (*Devolver*). No account is needed. Students identify themselves with their Uruguayan national ID number (*Cédula de Identidad*) and draw a freehand signature on a touch-enabled HTML5 Canvas pad.
+- **Administrators** (staff members) log in through a password-protected panel (*Panel de Control*) to view real-time KPI metrics, manage pending loans, browse the full history, and download PDF reports.
+
+## Student-facing workflows
+
+<Steps>
+  <Step title="Checkout — Retirar">
+    The student opens the **Retirar** tab and fills in their Cédula de Identidad (7–8 digits), full name, optional class group, and a free-text description of the equipment being taken. Quick-keyword buttons let them append common items (e.g. *Ceibalita 002*, *Cable HDMI*, *Control Proyector 16*) to the equipment field with a single tap. After drawing their signature on the canvas pad, they press **Confirmar Retiro**. The browser sends a `POST` to `api/loans.php`, which inserts a new row into the `loans` table with `status = 'active'` and the current timestamp. On success, the form resets and focus returns to the CI field so the next student can proceed immediately.
+  </Step>
+  <Step title="Return — Devolver">
+    The student opens the **Devolver** tab and enters their Cédula de Identidad, then presses **Enter** or the search button. The app calls `api/loans.php?action=active_by_ci&ci=…` and displays a list of their active loans. The student taps the loan they are returning, optionally adds an observation note, draws their return signature, and confirms. A `PUT` request to `api/loans.php` records the `return_time`, `return_signature`, and optional `return_observation`, then sets `status = 'returned'`. If the Devolver tab is left idle for five minutes without interaction, the UI automatically redirects back to Retirar.
+  </Step>
+</Steps>
+
+## Admin Panel — Panel de Control
+
+Administrators reach the panel by clicking the lock icon in the page header, which reveals a login form. Credentials are verified against the `users` table via `api/auth.php`. On successful login the Panel de Control becomes visible with four areas:
+
+- **KPI metrics grid** — four animated counters showing loans created today, currently active loans, loans returned today, and overdue loans (active for more than 12 hours).
+- **Pendientes / Alertas tab** — a table of all active loans with checkout time, student details, equipment description, checkout signature thumbnail, and an alert badge when a loan has been active for over 12 hours. Admins can mark any loan as returned or edit the equipment description inline through a modal.
+- **Historial Completo tab** — a paginated, searchable and filterable table of all loan records (both active and returned). Filters include a date range picker, a status dropdown, and a name/CI search box. Each row shows checkout and return signatures as clickable thumbnails that open a full-size modal. Admins can toggle a returned loan back to active, or mark an active loan as returned, directly from the table.
+- **Reportes tab** — summary statistics (total historical loans, currently unreturned, overdue) plus buttons to export the full dataset or only pending loans as a landscape A4 PDF via **html2pdf.js**. The filtered view in the history tab also exposes a *Exportar filtrado* button that generates a PDF of only the currently visible results.
+
+## Technology stack
+
+| Layer | Technology |
+|---|---|
+| Backend language | PHP 7+ |
+| Database access | PDO with `PDO::ATTR_ERRMODE_EXCEPTION` and `FETCH_ASSOC` |
+| Database | MySQL 5.7+ / MariaDB — database `isbo_prestamos` |
+| Frontend language | Vanilla JavaScript (ES6 `async`/`await`, `fetch`) |
+| Signature capture | HTML5 Canvas API (`SignaturePad` class in `signature.js`) |
+| PDF export | html2pdf.js 0.10.1 (via CDN) |
+| Icons | Font Awesome 6.4.0 (via CDN) |
+| Fonts | Google Fonts — Outfit (300, 400, 600, 700) |
+
+No JavaScript framework, build tool, or package manager is required. The entire frontend is served as static files alongside the PHP API.
+
+## Database
+
+The application uses a single MySQL database named **`isbo_prestamos`** with two tables:
+
+**`loans`** — one row per equipment loan event. Key columns include `ci` (student ID), `name`, `group_name`, `equipment_details` (free text), `checkout_time` (server-side `NOW()`), `checkout_signature` (PNG encoded as a Base64 data-URI), `return_time`, `return_signature`, `return_observation`, and `status` (enum: `active` | `returned`).
+
+**`users`** — admin accounts with `id`, `username`, and `password_hash` (PHP `password_hash()` / `PASSWORD_DEFAULT` bcrypt).
+
+## File structure
+
+```
+registroComponentesMultimedia/
+├── index.html               # Single-page application shell
+├── api/
+│   ├── config.php           # PDO connection, session path, sendJsonResponse()
+│   ├── auth.php             # Login, logout, session check endpoints
+│   ├── loans.php            # CRUD endpoints for loan records
+│   └── sesiones/            # PHP session storage (auto-created)
+└── assets/
+    ├── css/
+    │   └── style.css        # All application styles
+    ├── js/
+    │   ├── api.js           # Fetch wrapper and named API methods
+    │   ├── app.js           # UI logic, form handlers, admin dashboard
+    │   └── signature.js     # SignaturePad class (Canvas API)
+    └── img/
+        └── logo.png         # ISBO logo
+```
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="server" href="/installation">
+    Set up the application on XAMPP, LAMPP, or a production LAMP server.
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration">
+    Configure `api/config.php`, set database credentials, and manage admin users.
+  </Card>
+</CardGroup>

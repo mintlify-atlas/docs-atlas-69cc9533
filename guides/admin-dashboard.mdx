@@ -1,0 +1,358 @@
+---
+title: "Admin Dashboard: Monitor Loans and Export Reports"
+sidebarTitle: "Admin Dashboard"
+description: "How administrators log in, read KPI metrics, manage pending and returned loans, edit records, and export PDF reports from the ISBO equipment registry."
+---
+
+The ISBO admin dashboard gives staff a real-time view of all equipment loans: who has what, which loans are overdue, and a full searchable history. It is protected behind a username/password login backed by PHP sessions, and it exposes tools for manually marking items as returned, undoing accidental returns, editing loan details, and exporting PDF reports — all without touching the database directly.
+
+## Accessing the Admin Panel
+
+Click the **lock icon** (🔒) button in the top-right corner of the application header. This calls `UI.switchView('view-admin')` and immediately attempts `loadAdminDashboard()` to restore an active session if one already exists.
+
+```javascript
+const adminIconBtn = document.querySelector('.admin-icon-btn');
+adminIconBtn.addEventListener('click', () => {
+    UI.switchView('view-admin');
+    try { loadAdminDashboard(); } catch (e) { console.warn(e); }
+});
+```
+
+If no valid session is found, the login card (`#admin-login-card`) is displayed. If a session is already active (for example, the page was refreshed), the dashboard appears directly without re-entering credentials.
+
+## Logging In
+
+Enter your **Usuario** and **Contraseña** and click **Ingresar**. The form submits via `API.login()`:
+
+```javascript
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const u = document.getElementById('username').value;
+    const p = document.getElementById('password').value;
+
+    await API.login(u, p);
+    UI.showToast('Login exitoso', 'success');
+    loadAdminDashboard();
+});
+```
+
+`API.login()` sends a `POST` to `auth.php?action=login`:
+
+```javascript
+async login(username, password) {
+    return this.request('auth.php?action=login', 'POST', { username, password });
+}
+```
+
+The PHP handler verifies the password with `password_verify()` against the stored bcrypt hash, then sets the PHP session:
+
+```php
+if ($user && password_verify($data->password, $user['password_hash'])) {
+    $_SESSION['user_id'] = $user['id'];
+    $_SESSION['username'] = $user['username'];
+    sendJsonResponse(['message' => 'Login exitoso']);
+} else {
+    sendJsonResponse(['error' => 'Credenciales inválidas'], 401);
+}
+```
+
+On success, `loadAdminDashboard()` hides the login card, shows `#admin-dashboard`, loads the KPI metrics, and populates the Pendientes table.
+
+<Note>
+  PHP sessions are stored on disk in `api/sesiones/` (relative to the project root) rather than the system default session path. If the web server restarts, all session files in that directory are lost and administrators will need to log in again.
+</Note>
+
+## KPI Metric Cards
+
+The dashboard header displays four animated metric cards populated by `API.getStats()` → `GET loans.php?action=stats`:
+
+```javascript
+async function loadMetrics() {
+    const stats = await API.getStats();
+    UI.animateCount('metric-today', stats.today);
+    UI.animateCount('metric-active', stats.active);
+    UI.animateCount('metric-returned', stats.returned_today);
+    UI.animateCount('metric-delayed', stats.delayed);
+}
+```
+
+Each counter animates from 0 to its target value using an `easeOutCubic` curve over 600 ms.
+
+| Card | Element ID | SQL logic |
+|---|---|---|
+| **Préstamos Hoy** | `metric-today` | `COUNT(*) WHERE DATE(checkout_time) = TODAY` |
+| **Activos** | `metric-active` | `COUNT(*) WHERE status = 'active'` |
+| **Devueltos Hoy** | `metric-returned` | `COUNT(*) WHERE status = 'returned' AND DATE(return_time) = TODAY` |
+| **Atrasados** | `metric-delayed` | `COUNT(*) WHERE status = 'active' AND checkout_time < NOW() - INTERVAL 12 HOUR` |
+
+The same stats are used to populate the **Reportes** tab summary. The stats endpoint is protected — it returns HTTP 401 if `$_SESSION['user_id']` is not set:
+
+```php
+// loans.php — action=stats
+if (!isset($_SESSION['user_id'])) {
+    sendJsonResponse(['error' => 'No autorizado'], 401);
+}
+```
+
+## Admin Tabs
+
+The dashboard is organised into three tabs, toggled by clicking the tab buttons at the top of the panel:
+
+<CardGroup cols={3}>
+  <Card title="Pendientes / Alertas" icon="clock">
+    Lists all loans with `status = 'active'`, ordered by checkout time ascending (oldest first). Highlights overdue items with an alert badge.
+  </Card>
+  <Card title="Historial Completo" icon="table">
+    All loans in the database, newest first, with full filter controls and pagination.
+  </Card>
+  <Card title="Reportes" icon="chart-bar">
+    Summary statistics and PDF export buttons.
+  </Card>
+</CardGroup>
+
+---
+
+## Pendientes / Alertas Tab
+
+The Pendientes table is loaded automatically when the dashboard appears. Columns:
+
+| Column | Description |
+|---|---|
+| **Fecha Retiro** | Formatted checkout date/time (`DD/MM/YY HH:MM`) |
+| **Cédula** | Student's national ID |
+| **Nombre** | Full name |
+| **Grupo** | Class group (or `–` if not provided) |
+| **Equipamiento** | Equipment description |
+| **Firma Retiro** | Thumbnail of the checkout signature image; click to enlarge |
+| **Alerta** | Status badge (see below) |
+| **Acción** | Edit and mark-as-returned buttons |
+
+### Alerta Badge
+
+Each row evaluates whether the loan is overdue. If more than **12 hours** have elapsed since `checkout_time`, the badge shows an orange exclamation-triangle icon; otherwise a grey clock icon is shown:
+
+```javascript
+const diffHours = (now - checkoutDate) / (1000 * 60 * 60);
+
+let badge = `<span class="status-icon pending" title="En Préstamo">
+    <i class="fas fa-clock"></i></span>`;
+if (diffHours > 12) {
+    badge = `<span class="status-icon alert" title="Atrasado">
+        <i class="fas fa-exclamation-triangle"></i></span>`;
+}
+```
+
+This threshold matches the `delayed` metric in the stats endpoint.
+
+### Row Actions
+
+Each row in Pendientes has two action buttons:
+
+- **Edit** (pencil icon, `data-action="edit-details"`) — Opens the inline edit modal.
+- **Mark as returned** (check icon, `data-action="mark-returned"`) — Closes the loan server-side without requiring a student signature, useful when a student forgets to register the return themselves.
+
+---
+
+## Historial Completo Tab
+
+The full history table is loaded on first click of the **Historial Completo** tab. It shows every loan record in the database, sorted newest-first.
+
+### Columns
+
+| Column | Notes |
+|---|---|
+| **ID** | Internal record ID, prefixed with `#` |
+| **Retiro** | Checkout date/time |
+| **Cédula** | National ID |
+| **Nombre** | Full name |
+| **Grupo** | Class group |
+| **Equipamiento** | Equipment description |
+| **Firma Retiro** | Clickable thumbnail |
+| **Devolución** | Return date/time, or `–` if still active |
+| **Firma Devolución** | Clickable thumbnail, or `–` if still active |
+| **Observaciones** | Return observations, or `–` |
+| **Estado** | Icon: ✓ returned, ⏱ pending, ⚠ delayed |
+| **Acción** | Edit + toggle status buttons |
+
+### Filters
+
+The filter bar above the history table supports four simultaneous criteria:
+
+```javascript
+function applyHistoryFilters() {
+    const { search, from, to, status } = getHistoryFilterCriteria();
+    let filtered = allHistoryLoans.filter(loan => {
+        const loanDate = loan.checkout_time.split(' ')[0];
+        if (from && to && !(loanDate >= from && loanDate <= to)) return false;
+        if (from && !to && loanDate < from) return false;
+        if (to && !from && loanDate > to) return false;
+        if (status && loan.status !== status) return false;
+        if (search) {
+            const matchesName = loan.name?.toLowerCase().includes(search);
+            const matchesCi   = loan.ci?.toLowerCase().includes(search);
+            if (!matchesName && !matchesCi) return false;
+        }
+        return true;
+    });
+    historyPage = 1;
+    renderHistoryTable(filtered, historyPage);
+}
+```
+
+| Filter | Control | Behaviour |
+|---|---|---|
+| **Buscar** | `#admin-search` text input | Live search as you type; matches name or CI (case-insensitive) |
+| **Desde** | `#date-from` date picker | Lower bound on `checkout_time` date |
+| **Hasta** | `#date-to` date picker | Upper bound on `checkout_time` date |
+| **Estado** | `#status-filter` dropdown | `Todos` / `Pendientes` (`active`) / `Devueltos` (`returned`) |
+
+Click the **filter icon** button to apply all criteria, or the **× icon** button to clear all filters and restore the full list.
+
+### Pagination
+
+The history table paginates at **10 records per page**. Navigation controls appear below the table when there is more than one page:
+
+```javascript
+const HISTORY_PAGE_SIZE = 10;
+
+function renderHistoryPagination(totalPages) {
+    pageInfo.textContent = `Página ${historyPage} de ${totalPages}`;
+    prevBtn.disabled = historyPage <= 1;
+    nextBtn.disabled = historyPage >= totalPages;
+}
+```
+
+Use the **‹** and **›** arrow buttons to move between pages. The page counter reads `Página N de M`.
+
+### Row Actions in History
+
+| Button | `data-action` | Behaviour |
+|---|---|---|
+| Pencil icon | `edit-details` | Opens the edit modal for the loan's equipment description |
+| Check icon | `mark-returned` | Marks an active loan as returned (admin action, no signature required) |
+| Undo icon | `mark-active` | Reverts a returned loan back to active status |
+
+The undo action sends a `PUT` request that clears `return_time`, `return_signature`, and `return_observation` on the database row:
+
+```php
+// loans.php — PUT with status='active'
+$stmt = $pdo->prepare(
+    "UPDATE loans
+     SET status = 'active',
+         return_time = NULL,
+         return_signature = NULL,
+         return_observation = NULL
+     WHERE id = ?"
+);
+```
+
+---
+
+## Signature Thumbnails
+
+Anywhere a signature image is displayed (both in Pendientes and Historial), it appears as a small thumbnail. Clicking any thumbnail opens a full-screen modal with the enlarged image:
+
+```javascript
+document.addEventListener('click', (e) => {
+    const thumb = e.target.closest('.signature-thumb');
+    if (thumb) {
+        document.getElementById('sig-modal-title').textContent =
+            thumb.dataset.sigLabel || 'Firma';
+        document.getElementById('sig-modal-img').src = thumb.dataset.sigSrc;
+        document.getElementById('signature-modal').classList.remove('hidden');
+    }
+});
+```
+
+Close the modal by clicking the **× button** or clicking outside the modal content area.
+
+---
+
+## Editing a Loan Record
+
+Clicking the **pencil icon** on any row (in either table) opens the **Editar Préstamo** modal. The modal pre-fills the `#edit-loan-equipment` textarea with the current equipment description. After editing, click **Guardar cambios** to save.
+
+The modal calls `API.updateLoanDetails()`:
+
+```javascript
+await API.updateLoanDetails(id, { equipment_details: equipment });
+```
+
+Which issues a `PUT` to `loans.php` with the new value. This endpoint requires an active admin session (`$_SESSION['user_id']` must be set). Attempting to save an empty description is blocked client-side with an error toast.
+
+Close the modal without saving by clicking the **ban icon** cancel button, the **× close button**, or clicking the backdrop outside the modal.
+
+---
+
+## Reportes Tab
+
+The **Reportes** tab shows a summary of three aggregate figures and provides two PDF export buttons.
+
+<CardGroup cols={3}>
+  <Card title="Total Histórico" icon="database">
+    `report-total` — total number of loan records ever created (all statuses).
+  </Card>
+  <Card title="Sin Devolver" icon="clock">
+    `report-active` — current count of loans with `status = 'active'`.
+  </Card>
+  <Card title="Atrasados" icon="triangle-exclamation">
+    `report-delayed` — loans active for more than 12 hours.
+  </Card>
+</CardGroup>
+
+These figures are fetched from `API.getStats()` each time the Reportes tab is opened.
+
+### PDF Export
+
+Two buttons generate downloadable PDF files using the **html2pdf.js** library:
+
+| Button | ID | Output file | Contents |
+|---|---|---|---|
+| **Reporte Completo (PDF)** | `#btn-pdf-full` | `Reporte_Completo_ISBO.pdf` | All loan records |
+| **Solo Pendientes (PDF)** | `#btn-pdf-pending` | `Reporte_Pendientes_ISBO.pdf` | Active loans only |
+
+A third export button (`#btn-export-filtered-pdf`) in the Historial toolbar exports only the currently filtered result set as `Reporte_Filtrado_ISBO.pdf`.
+
+All PDFs are rendered landscape A4, include signature images inline, and carry an ISBO header with generation timestamp. The PDF is built by temporarily appending a styled `div` to `document.body`, capturing it with `html2canvas` at 2× scale, and then removing the element after saving.
+
+```javascript
+const opt = {
+    margin: 6,
+    filename: 'Reporte_Completo_ISBO.pdf',
+    image: { type: 'jpeg', quality: 0.95 },
+    html2canvas: { scale: 2, useCORS: true },
+    jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+};
+await html2pdf().set(opt).from(renderArea).save();
+```
+
+<Tip>
+  Use the **Historial** tab filters to narrow results by date range or status, then click the **PDF icon** in the filter bar to export only those filtered records — useful for end-of-day or end-of-week reports.
+</Tip>
+
+---
+
+## Logging Out
+
+Click the **Salir** button in the dashboard header. This calls `API.logout()`:
+
+```javascript
+async logout() {
+    return this.request('auth.php?action=logout', 'POST');
+}
+```
+
+The PHP handler destroys the server-side session:
+
+```php
+elseif ($requestMethod === 'POST' && $action === 'logout') {
+    session_destroy();
+    sendJsonResponse(['message' => 'Logout exitoso']);
+}
+```
+
+The UI hides `#admin-dashboard`, shows `#admin-login-card`, and resets the login form — the dashboard data is no longer accessible until the next successful login.
+
+<Warning>
+  PHP sessions are stored as files in `api/sesiones/`. If the server process (Apache/LAMPP) is restarted, all active sessions are invalidated and every logged-in administrator will be silently logged out. They will see the login card on their next interaction that requires authentication.
+</Warning>
