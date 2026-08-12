@@ -1,7 +1,7 @@
 ---
 title: "ISBO API Overview: PHP REST Endpoints for Equipment Loans"
 sidebarTitle: "Overview"
-description: "Overview of the ISBO equipment registry REST API: base URL, request format, session-based auth, response envelope, error codes, and the JavaScript API client."
+description: "Overview of the ISBO equipment registry REST API: base URL, request format, session-based auth, response envelope, and error codes."
 ---
 
 The ISBO Registro de Equipamiento Multimedia exposes a lightweight REST API built with PHP. All endpoints live under the `api/` directory of the web root and accept JSON request bodies. The same origin serves both the frontend and the API, so no CORS configuration is required and browser session cookies work seamlessly.
@@ -10,7 +10,7 @@ The ISBO Registro de Equipamiento Multimedia exposes a lightweight REST API buil
 
 All endpoints are relative to the web root of the application. Replace `http://your-server` with the actual host where the application is deployed.
 
-```
+```text
 http://your-server/api/loans.php
 http://your-server/api/auth.php
 ```
@@ -83,7 +83,7 @@ Every response — success or error — is a JSON object with `Content-Type: app
 | ------ | ------------------------------------------- | --------------------------------- | ---------------------------------------- |
 | POST   | `auth.php?action=login`                     | No                                | Admin login — creates a PHP session      |
 | GET    | `auth.php?action=check`                     | No                                | Check current session status             |
-| POST   | `auth.php?action=logout`                    | Yes (session)                     | Destroy the current PHP session          |
+| POST   | `auth.php?action=logout`                    | No                                | Destroy the current PHP session          |
 | POST   | `loans.php`                                 | No                                | Create a new equipment loan              |
 | GET    | `loans.php?action=active_by_ci&ci={ci}`     | No                                | Get all active loans for a given CI      |
 | PUT    | `loans.php`                                 | Partial — see note below          | Return a loan or update loan data        |

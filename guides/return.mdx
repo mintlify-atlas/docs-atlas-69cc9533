@@ -1,5 +1,5 @@
 ---
-title: "Return Equipment and Close an Active Loan"
+title: "Return Borrowed Equipment and Close an Active Loan"
 sidebarTitle: "Return"
 description: "How students find their active loans by cédula, select a loan, sign the return form, and confirm equipment return in the ISBO registry."
 ---
@@ -13,8 +13,19 @@ The return view includes a **5-minute inactivity guard**. If no interaction is d
 ```javascript
 const RETURN_VIEW_INACTIVITY_MS = 5 * 60 * 1000; // 300 000 ms
 
+function clearReturnInactivityTimer() {
+    if (returnViewInactivityTimeout) {
+        clearTimeout(returnViewInactivityTimeout);
+        returnViewInactivityTimeout = null;
+    }
+}
+
 function resetReturnInactivityTimer() {
     clearReturnInactivityTimer();
+    if (!document.getElementById('view-return') ||
+        document.getElementById('view-return').classList.contains('hidden')) {
+        return;
+    }
     returnViewInactivityTimeout = setTimeout(() => {
         if (!document.getElementById('view-return').classList.contains('hidden')) {
             UI.switchView('view-checkout');

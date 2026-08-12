@@ -1,5 +1,5 @@
 ---
-title: "Admin Dashboard: Monitor Loans and Export Reports"
+title: "Admin Dashboard: Monitor Active Loans and Export Reports"
 sidebarTitle: "Admin Dashboard"
 description: "How administrators log in, read KPI metrics, manage pending and returned loans, edit records, and export PDF reports from the ISBO equipment registry."
 ---
@@ -30,9 +30,13 @@ document.getElementById('login-form').addEventListener('submit', async (e) => {
     const u = document.getElementById('username').value;
     const p = document.getElementById('password').value;
 
-    await API.login(u, p);
-    UI.showToast('Login exitoso', 'success');
-    loadAdminDashboard();
+    try {
+        await API.login(u, p);
+        UI.showToast('Login exitoso', 'success');
+        loadAdminDashboard();
+    } catch (error) {
+        UI.showToast(error.message, 'error');
+    }
 });
 ```
 

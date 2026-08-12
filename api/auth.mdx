@@ -1,7 +1,7 @@
 ---
 title: "Authentication API: Admin Login, Logout, and Session Check"
 sidebarTitle: "Authentication"
-description: "Reference for auth.php endpoints: POST login with username/password, GET session status check, and POST logout. All admin routes require an active PHP session."
+description: "Reference for auth.php: POST login with credentials, GET session status check, and POST logout. Admin loan routes require an active PHP session cookie."
 ---
 
 The `auth.php` file exposes three endpoints that manage administrator identity using PHP native sessions. After a successful login the server sets a session cookie; all subsequent requests from the same browser automatically present that cookie, granting access to protected loan routes. Sessions are stored on disk under `api/sesiones/` and are started via `session_start()` on every API request through `config.php`.

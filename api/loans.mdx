@@ -1,7 +1,7 @@
 ---
 title: "Loans API: Create, Retrieve, and Return Equipment Loans"
 sidebarTitle: "Loans"
-description: "Reference for loans.php endpoints: POST to create a loan, GET to retrieve by CI or admin views, PUT to register a return or update loan details. Includes request/response schemas."
+description: "Reference for loans.php: create loans, retrieve by CI, register returns with signatures, and admin endpoints for status overrides, edits, and KPI stats."
 ---
 
 The `loans.php` file is the core of the equipment registry. It handles the full lifecycle of a loan: creation with a checkout signature, public return with a return signature, and administrative operations such as status overrides, record edits, and reporting queries. Public endpoints require no session; admin endpoints check `$_SESSION['user_id']` and return 401 if the session is missing.
@@ -205,12 +205,13 @@ Registers the return of a specific loan. The borrower provides their signature; 
   `"Devolución registrada correctamente"` on success.
 </ResponseField>
 
-| Status | Body                                                        | Condition                                   |
-| ------ | ----------------------------------------------------------- | ------------------------------------------- |
-| 200    | `{ "message": "Devolución registrada correctamente" }`      | Return recorded                             |
-| 400    | `{ "error": "Faltan campos obligatorios para la devolución" }` | `return_signature` missing                |
-| 404    | `{ "error": "Préstamo no encontrado o ya devuelto" }`       | No active loan found with the given ID      |
-| 500    | `{ "error": "Error al guardar: ..." }`                      | Database write failed                       |
+| Status | Body                                                           | Condition                                   |
+| ------ | -------------------------------------------------------------- | ------------------------------------------- |
+| 200    | `{ "message": "Devolución registrada correctamente" }`         | Return recorded                             |
+| 400    | `{ "error": "Falta el ID del préstamo" }`                      | `id` field missing from request body        |
+| 400    | `{ "error": "Faltan campos obligatorios para la devolución" }` | `return_signature` missing                  |
+| 404    | `{ "error": "Préstamo no encontrado o ya devuelto" }`          | No active loan found with the given ID      |
+| 500    | `{ "error": "Error al guardar: ..." }`                         | Database write failed                       |
 
 ### curl Example
 
@@ -264,13 +265,14 @@ Allows an authenticated admin to override the loan status without requiring a bo
 
 ### Responses
 
-| Status | Body                                                            | Condition                                     |
-| ------ | --------------------------------------------------------------- | --------------------------------------------- |
-| 200    | `{ "message": "Registro marcado como devuelto" }`               | Successfully marked as returned               |
-| 200    | `{ "message": "Registro marcado como en préstamo" }`            | Successfully reverted to active               |
-| 401    | `{ "error": "No autorizado" }`                                  | No active admin session                       |
-| 404    | `{ "error": "Préstamo no encontrado o ya devuelto" }`           | Loan not found or already in target state     |
-| 500    | `{ "error": "Error al guardar: ..." }`                          | Database write failed                         |
+| Status | Body                                                              | Condition                                               |
+| ------ | ----------------------------------------------------------------- | ------------------------------------------------------- |
+| 200    | `{ "message": "Registro marcado como devuelto" }`                 | Successfully marked as returned                         |
+| 200    | `{ "message": "Registro marcado como en préstamo" }`              | Successfully reverted to active                         |
+| 401    | `{ "error": "No autorizado" }`                                    | No active admin session                                 |
+| 404    | `{ "error": "Préstamo no encontrado o ya devuelto" }`             | `status: "returned"` — loan not found or already returned |
+| 404    | `{ "error": "Préstamo no encontrado o ya en préstamo" }`          | `status: "active"` — loan not found or already active   |
+| 500    | `{ "error": "Error al guardar: ..." }`                            | Database write failed                                   |
 
 ### curl Example
 
@@ -426,7 +428,7 @@ Returns aggregated counts for the admin dashboard. All values are integers. **Re
 ### Response Fields
 
 <ResponseField name="today" type="integer">
-  Number of loans created today (based on `DATE(checkout_time) = CURDATE()`).
+  Number of loans created today (based on `DATE(checkout_time) = ?` where `?` is the current date from PHP's `date('Y-m-d')`).
 </ResponseField>
 
 <ResponseField name="active" type="integer">
@@ -434,7 +436,7 @@ Returns aggregated counts for the admin dashboard. All values are integers. **Re
 </ResponseField>
 
 <ResponseField name="returned_today" type="integer">
-  Number of loans returned today (based on `DATE(return_time) = CURDATE()`).
+  Number of loans returned today (based on `DATE(return_time) = ?` where `?` is the current date from PHP's `date('Y-m-d')`).
 </ResponseField>
 
 <ResponseField name="delayed" type="integer">

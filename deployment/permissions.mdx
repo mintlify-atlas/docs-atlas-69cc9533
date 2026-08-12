@@ -1,7 +1,7 @@
 ---
 title: "Fix File Permissions and SELinux Contexts on CentOS"
 sidebarTitle: "Permissions"
-description: "How to set correct Apache file ownership, secure api/config.php, configure SELinux write contexts for the sessions directory, and use fix_auth.sh on CentOS 9."
+description: "How to set correct Apache file ownership, secure api/config.php, configure SELinux write contexts for api/sesiones, and run fix_auth.sh on CentOS 9."
 ---
 
 Getting file permissions right is one of the most common stumbling blocks when deploying a PHP application on CentOS or RHEL. Apache runs as the `apache` user and group — it must be able to read every PHP and static file in the document root, and it must be able to write session files to `api/sesiones/`. On top of standard Unix permissions, CentOS 9 enforces SELinux security policies that can silently block writes even when the Unix permissions look correct. This guide explains how to handle both layers.
@@ -63,8 +63,8 @@ The script performs four numbered steps:
     restorecon -R -v /var/www/html
     semanage fcontext -a -t httpd_sys_rw_content_t "/var/www/html/api/sesiones(/.*)?"
     chcon -R -t httpd_sys_rw_content_t /var/www/html/api/sesiones
-    setsebool -P httpd_can_network_connect 1
-    setsebool -P httpd_graceful_shutdown 1
+    setsebool -P httpd_can_network_connect 1 2>/dev/null
+    setsebool -P httpd_graceful_shutdown 1 2>/dev/null
     ```
   </Step>
 
@@ -127,6 +127,7 @@ fi
 # 3. Asegurar la carpeta de sesiones y archivo de configuración
 echo -e "\n${YELLOW}[2/4] Asegurando archivos críticos...${NC}"
 if [ -d "$SESIONES_DIR" ]; then
+    # La carpeta de sesiones necesita permisos de escritura completos para el grupo/usuario apache
     chmod 775 "$SESIONES_DIR"
     echo -e "${GREEN}[OK] Permisos de la carpeta de sesiones ajustados a 775.${NC}"
 else
@@ -134,6 +135,7 @@ else
 fi
 
 if [ -f "$CONFIG_FILE" ]; then
+    # El archivo de configuración debe ser privado para apache
     chmod 600 "$CONFIG_FILE"
     echo -e "${GREEN}[OK] Archivo config.php protegido (600).${NC}"
 fi
@@ -145,14 +147,17 @@ if command -v getenforce &> /dev/null; then
     echo -e "Estado actual de SELinux: ${YELLOW}$STATUS${NC}"
 
     if [ "$STATUS" != "Disabled" ]; then
+        # Restaurar contexto por defecto de Apache a la web
         restorecon -R -v $HTML_DIR > /dev/null
-
+        
+        # Permitir explícitamente escritura en la carpeta de sesiones
         if [ -d "$SESIONES_DIR" ]; then
             semanage fcontext -a -t httpd_sys_rw_content_t "$SESIONES_DIR(/.*)?" 2>/dev/null
             chcon -R -t httpd_sys_rw_content_t "$SESIONES_DIR"
             echo -e "${GREEN}[OK] Contexto de escritura aplicado a 'api/sesiones'.${NC}"
         fi
-
+        
+        # Permitir que Apache pueda enviar cookies/peticiones si estuviera bloqueado
         setsebool -P httpd_can_network_connect 1 2>/dev/null
         setsebool -P httpd_graceful_shutdown 1 2>/dev/null
         echo -e "${GREEN}[OK] Booleans de SELinux para Apache actualizados.${NC}"

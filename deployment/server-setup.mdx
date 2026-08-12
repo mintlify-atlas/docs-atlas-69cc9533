@@ -1,7 +1,7 @@
 ---
 title: "Set Up an Apache Server to Host the Equipment Registry"
 sidebarTitle: "Server Setup"
-description: "How to deploy ISBO Registro de Equipamiento on Apache with PHP and MySQL on CentOS 9, RHEL, or XAMPP for Windows and Linux."
+description: "How to deploy ISBO Registro de Equipamiento Multimedia on Apache with PHP and MariaDB on CentOS 9, RHEL, or XAMPP for Windows and Linux."
 ---
 
 The ISBO Registro de Equipamiento Multimedia is a PHP/MySQL web application that runs on any standard Apache + PHP stack. This guide walks you through preparing a server or local machine to host the application, covering both a production CentOS 9 / RHEL environment and a XAMPP-based local development setup.
@@ -27,7 +27,7 @@ The ISBO Registro de Equipamiento Multimedia is a PHP/MySQL web application that
     Log in as root or a user with `sudo` privileges, then install all required packages in a single command:
 
     ```bash
-    sudo dnf install httpd php php-pdo php-mysqlnd mysql-server -y
+    sudo dnf install httpd php php-pdo php-mysqlnd mariadb-server -y
     ```
 
     This installs:
@@ -35,7 +35,7 @@ The ISBO Registro de Equipamiento Multimedia is a PHP/MySQL web application that
     - **php** — the PHP interpreter
     - **php-pdo** — PHP's database abstraction layer (required by the API)
     - **php-mysqlnd** — the native MySQL driver for PDO
-    - **mysql-server** — MariaDB (fully compatible with MySQL syntax used by the app)
+    - **mariadb-server** — MariaDB (fully compatible with MySQL syntax used by the app)
   </Step>
 
   <Step title="Start and Enable Services">
@@ -43,14 +43,14 @@ The ISBO Registro de Equipamiento Multimedia is a PHP/MySQL web application that
 
     ```bash
     sudo systemctl enable --now httpd
-    sudo systemctl enable --now mysqld
+    sudo systemctl enable --now mariadb
     ```
 
     Verify both services are running:
 
     ```bash
     sudo systemctl status httpd
-    sudo systemctl status mysqld
+    sudo systemctl status mariadb
     ```
 
     Both should report `active (running)`.

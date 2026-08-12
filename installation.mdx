@@ -1,10 +1,10 @@
 ---
-title: "Install ISBO Equipment Registry on a LAMP Server"
+title: "Install the ISBO Equipment Registry on a LAMP Server"
 sidebarTitle: "Installation"
-description: "Step-by-step guide to deploying the ISBO equipment registry on XAMPP, WAMP (local dev), or a production Apache/PHP/MySQL stack."
+description: "Deploy the ISBO equipment registry on XAMPP, LAMPP, or a production Apache and PHP server — no package manager or build step required."
 ---
 
-The ISBO Equipment Registry is a single-folder PHP application with no composer dependencies, no npm build step, and no framework — only Apache, PHP, and MySQL are required. The instructions below cover two deployment paths: a local development environment using XAMPP or WAMP, and a production LAMP server on CentOS/RHEL/Debian.
+The ISBO Equipment Registry is a single-folder PHP application with no composer dependencies, no npm build step, and no framework — only Apache, PHP, and MySQL are required. The instructions below cover two deployment paths: a local development environment using XAMPP or LAMPP, and a production LAMP server on CentOS/RHEL/Debian.
 
 ## Prerequisites
 
@@ -25,15 +25,15 @@ Before you begin, ensure the following are available on your server or workstati
 
 <CodeGroup>
 
-```bash XAMPP / WAMP (local dev)
-# 1. Open a terminal in the XAMPP/WAMP htdocs directory
+```bash XAMPP / LAMPP (local dev)
+# 1. Open a terminal in the XAMPP/LAMPP htdocs directory
 #    Windows (XAMPP):  C:\xampp\htdocs
-#    macOS/Linux XAMPP: /opt/lampp/htdocs
+#    macOS/Linux LAMPP: /opt/lampp/htdocs
 
 # 2. Clone the repository (or copy the folder manually)
 git clone https://github.com/gavafue/registroComponentesMultimedia.git
 
-# 3. Make sure Apache and MySQL are running in the XAMPP/WAMP control panel
+# 3. Make sure Apache and MySQL are running in the XAMPP control panel
 # 4. Open http://localhost/registroComponentesMultimedia/index.html
 ```
 
@@ -163,7 +163,7 @@ sudo chown -R www-data:www-data /var/www/html/registroComponentesMultimedia/api
 
 Open a browser and navigate to your installation URL:
 
-```
+```text
 # Local XAMPP
 http://localhost/registroComponentesMultimedia/index.html
 
